@@ -35,6 +35,7 @@ const (
 	AckCmd
 	ErrorCmd
 	PingCmd
+	WinsizeCmd
 )
 
 var stringCmdList = map[HyperCmd]string{
@@ -48,6 +49,7 @@ var stringCmdList = map[HyperCmd]string{
 	AckCmd:             "ack",
 	ErrorCmd:           "error",
 	PingCmd:            "ping",
+	WinsizeCmd:         "winsize",
 }
 
 type NetIface struct {
@@ -116,6 +118,13 @@ type RemoveContainer struct {
 type Exec struct {
 	ContainerID string  `json"containerId"`
 	Process     Process `json:"process"`
+}
+
+type Winsize struct {
+	ContainerID string `json:"container"`
+	ProcessID   string `json:"process"`
+	Row         uint16 `json:"row"`
+	Column      uint16 `json:"column"`
 }
 
 func CmdToString(cmd HyperCmd) string {

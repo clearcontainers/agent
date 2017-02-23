@@ -29,6 +29,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	hyper "github.com/clearcontainers/container-vm-agent/api"
 	"github.com/opencontainers/runc/libcontainer"
@@ -91,6 +92,7 @@ var callbackList = map[hyper.HyperCmd]cmdCb{
 	hyper.ExecCmd:            execCb,
 	hyper.ReadyCmd:           readyCb,
 	hyper.PingCmd:            pingCb,
+	hyper.WinsizeCmd:         winsizeCb,
 }
 
 func init() {
@@ -819,5 +821,65 @@ func readyCb(pod *pod, data []byte) error {
 }
 
 func pingCb(pod *pod, data []byte) error {
+	return nil
+}
+
+func winsizeCb(pod *pod, data []byte) error {
+	var payload hyper.Winsize
+
+	if pod.running == false {
+		return fmt.Errorf("Pod not started, impossible to resize the window")
+	}
+
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+
+	if _, exist := pod.containers[payload.ContainerID]; exist == false {
+		return fmt.Errorf("Container %s not found, impossible to resize the window", payload.ContainerID)
+	}
+
+	status, err := pod.containers[payload.ContainerID].container.Status()
+	if err != nil {
+		return err
+	}
+
+	if status != libcontainer.Running {
+		return fmt.Errorf("Container %s not running, impossible to resize window", payload.ContainerID)
+	}
+
+	if _, exist := pod.containers[payload.ContainerID].processes[payload.ProcessID]; exist == false {
+		return fmt.Errorf("Process %s does not exist on container %s, impossible to resize window", payload.ProcessID, payload.ContainerID)
+	}
+
+	ptmx, err := os.Open("/dev/pts/ptmx")
+	if err != nil {
+		return fmt.Errorf("Could not open /dev/pts/ptmx: %s", err)
+	}
+
+	window := new(struct {
+		Row    uint16
+		Col    uint16
+		Xpixel uint16
+		Ypixel uint16
+	})
+
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
+		ptmx.Fd(),
+		syscall.TIOCGWINSZ,
+		uintptr(unsafe.Pointer(window))); errno != 0 {
+		return fmt.Errorf("Could not get window size: %s", errno.Error())
+	}
+
+	window.Row = payload.Row
+	window.Col = payload.Column
+
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
+		ptmx.Fd(),
+		syscall.TIOCSWINSZ,
+		uintptr(unsafe.Pointer(window))); errno != 0 {
+		return fmt.Errorf("Could not set window size: %s", errno.Error())
+	}
+
 	return nil
 }
