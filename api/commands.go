@@ -17,6 +17,7 @@
 package api
 
 import (
+	"net"
 	"syscall"
 )
 
@@ -49,6 +50,26 @@ var stringCmdList = map[HyperCmd]string{
 	PingCmd:            "ping",
 }
 
+type NetIface struct {
+	HwAddr  net.HardwareAddr `json:"hwAddr"`
+	Name    string `json:"name"`
+	IPAddr string `json:"ipAddr"`
+	NetMask   string `json:"netMask"`
+}
+
+type Route struct {
+	Src     string `json:"src"`
+	Dest    string `json:"dest"`
+	Gateway string `json:"gateway"`
+	Device  string `json:"device"`
+}
+
+type Network struct {
+	Interfaces []NetIface `json:"interfaces"`
+	DNS        []string `json:"dns"`
+	Routes     []Route `json:"routes"`
+}
+
 type Process struct {
 	ID       string   `json:"id"`
 	User     string   `json:"user,omitempty"`
@@ -72,8 +93,9 @@ type TtyMessage struct {
 }
 
 type StartPod struct {
-	ID       string `json:"id"`
-	ShareDir string `json:"shareDir"`
+	ID         string `json:"id"`
+	ShareDir   string `json:"shareDir"`
+	Network    Network `json:"network"`
 }
 
 type NewContainer struct {

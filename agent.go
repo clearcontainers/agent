@@ -46,6 +46,11 @@ const (
 	mountShareDirDest  = "/tmp/shareDir"
 	type9pFs           = "9p"
 	containerMountDest = "/tmp/hyper"
+	loName             = "lo"
+	loIPAddr           = "127.0.0.1"
+	loNetMask          = "0"
+	loType             = "loopback"
+	loGateway          = "localhost"
 )
 
 type process struct {
@@ -70,6 +75,7 @@ type pod struct {
 	ctl        *os.File
 	tty        *os.File
 	stdinList  map[uint64]*os.File
+	network    hyper.Network
 	stdinLock  sync.Mutex
 	stdoutLock sync.Mutex
 }
@@ -539,6 +545,11 @@ func startPodCb(pod *pod, data []byte) error {
 
 	pod.id = payload.ID
 	pod.running = true
+	pod.network = payload.Network
+
+	if err := pod.setupNetwork(); err != nil {
+		return fmt.Errorf("Could not setup the network: %s", err)
+	}
 
 	return nil
 }
@@ -556,10 +567,15 @@ func destroyPodCb(pod *pod, data []byte) error {
 		return err
 	}
 
+	if err := pod.removeNetwork(); err != nil {
+		return fmt.Errorf("Could not remove the network: %s", err)
+	}
+
 	pod.id = ""
 	pod.containers = make(map[string]*container)
 	pod.running = false
 	pod.stdinList = make(map[uint64]*os.File)
+	pod.network = hyper.Network{}
 
 	return nil
 }
