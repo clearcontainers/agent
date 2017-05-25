@@ -605,7 +605,7 @@ func newContainerCb(pod *pod, data []byte) error {
 	defaultMountFlags := syscall.MS_NOEXEC | syscall.MS_NOSUID | syscall.MS_NODEV
 
 	config := configs.Config{
-		Rootfs: absoluteRootFs,
+		Rootfs:       absoluteRootFs,
 		Capabilities: &configs.Capabilities{},
 		Namespaces: configs.Namespaces([]configs.Namespace{
 			{Type: configs.NEWNS},
