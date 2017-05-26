@@ -99,7 +99,7 @@ func unmountShareDir() error {
 	return os.RemoveAll(containerMountDest)
 }
 
-func mountContainerRootFs(containerID, rootFs string) (string, error) {
+func mountContainerRootFs(containerID, image, rootFs string) (string, error) {
 	dest := filepath.Join(containerMountDest, containerID, "root")
 	if err := os.MkdirAll(dest, os.FileMode(0755)); err != nil {
 		return "", err
@@ -129,6 +129,14 @@ func unmountContainerRootFs(containerID, mountingPath string) error {
 	}
 
 	if err := os.RemoveAll(containerPath); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ioctl(fd uintptr, flag, data uintptr) error {
+	if _, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, flag, data); err != 0 {
 		return err
 	}
 

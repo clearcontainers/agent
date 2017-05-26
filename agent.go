@@ -31,10 +31,12 @@ import (
 	"time"
 	"unsafe"
 
-	hyper "github.com/clearcontainers/container-vm-agent/api"
+	hyper "github.com/clearcontainers/agent/api"
 	"github.com/opencontainers/runc/libcontainer"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	_ "github.com/opencontainers/runc/libcontainer/nsenter"
+	"github.com/opencontainers/runc/libcontainer/utils"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -52,15 +54,62 @@ const (
 	loNetMask          = "0"
 	loType             = "loopback"
 	loGateway          = "localhost"
+	defaultPassword    = "/etc/passwd"
+	statelessPassword  = "/usr/share/defaults/etc/passwd"
+	defaultGroup       = "/etc/group"
+	statelessGroup     = "/usr/share/defaults/etc/group"
 )
 
+var capsList = []string{
+	"CAP_AUDIT_CONTROL",
+	"CAP_AUDIT_READ",
+	"CAP_AUDIT_WRITE",
+	"CAP_BLOCK_SUSPEND",
+	"CAP_CHOWN",
+	"CAP_DAC_OVERRIDE",
+	"CAP_DAC_READ_SEARCH",
+	"CAP_FOWNER",
+	"CAP_FSETID",
+	"CAP_IPC_LOCK",
+	"CAP_IPC_OWNER",
+	"CAP_KILL",
+	"CAP_LEASE",
+	"CAP_LINUX_IMMUTABLE",
+	"CAP_MAC_ADMIN",
+	"CAP_MAC_OVERRIDE",
+	"CAP_MKNOD",
+	"CAP_NET_ADMIN",
+	"CAP_NET_BIND_SERVICE",
+	"CAP_NET_BROADCAST",
+	"CAP_NET_RAW",
+	"CAP_SETGID",
+	"CAP_SETFCAP",
+	"CAP_SETPCAP",
+	"CAP_SETUID",
+	"CAP_SYS_ADMIN",
+	"CAP_SYS_BOOT",
+	"CAP_SYS_CHROOT",
+	"CAP_SYS_MODULE",
+	"CAP_SYS_NICE",
+	"CAP_SYS_PACCT",
+	"CAP_SYS_PTRACE",
+	"CAP_SYS_RAWIO",
+	"CAP_SYS_RESOURCE",
+	"CAP_SYS_TIME",
+	"CAP_SYS_TTY_CONFIG",
+	"CAP_SYSLOG",
+	"CAP_WAKE_ALARM",
+}
+
 type process struct {
-	process   libcontainer.Process
-	stdin     *os.File
-	stdout    *os.File
-	stderr    *os.File
-	seqStdio  uint64
-	seqStderr uint64
+	process     libcontainer.Process
+	stdin       *os.File
+	stdout      *os.File
+	stderr      *os.File
+	seqStdio    uint64
+	seqStderr   uint64
+	consoleSock *os.File
+	termMaster  *os.File
 }
 
 type container struct {
@@ -125,8 +174,13 @@ func main() {
 		fmt.Printf("Could not open channels: %s\n", err)
 		return
 	}
-
 	defer pod.closeChannels()
+
+	// Setup users and groups
+	if err := pod.setupUsersAndGroups(); err != nil {
+		fmt.Printf("Could not setup users and groups: %s\n", err)
+		return
+	}
 
 	// Run CTL loop
 	go pod.controlLoop(&wgLoops)
@@ -139,7 +193,9 @@ func main() {
 
 func (p *pod) controlLoop(wg *sync.WaitGroup) {
 	// Send READY right after it has connected.
-	p.sendCmd(hyper.ReadyCmd, []byte{})
+	if err := p.sendCmd(hyper.ReadyCmd, []byte{}); err != nil {
+		fmt.Printf("Could not send READY message: %s\n", err)
+	}
 
 	for {
 		reply := hyper.AckCmd
@@ -153,6 +209,8 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 			fmt.Printf("CTL channel read failed: %s\n", err)
 			break
 		}
+
+		fmt.Printf("Command received %s\n", hyper.CmdToString(cmd))
 
 		if err := p.runCmd(cmd, data); err != nil {
 			fmt.Printf("%s error: %s\n", hyper.CmdToString(cmd), err)
@@ -182,22 +240,34 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 			break
 		}
 
+		fmt.Printf("Read from TTY\n")
+
 		if seq == uint64(0) || data == nil {
 			continue
 		}
+
+		fmt.Printf("Read from TTY: %d, %s\n", seq, string(data))
 
 		// Lock the list before we access it.
 		p.stdinLock.Lock()
 
 		file, exist := p.stdinList[seq]
-		if exist == false {
+		if !exist {
+			fmt.Printf("SEQ %d not found for STDIN\n", seq)
 			p.stdinLock.Unlock()
 			continue
 		}
 
-		file.Write(data)
-
 		p.stdinLock.Unlock()
+
+		fmt.Printf("SEQ found, write data to the stdin\n")
+
+		n, err := file.Write(data)
+		if err != nil {
+			fmt.Printf("Error while writing to container process stdin: %s\n", err)
+		}
+
+		fmt.Printf("%d bytes written out of %d\n", n, len(data))
 	}
 
 	wg.Done()
@@ -207,7 +277,7 @@ func (p *pod) registerStdin(seq uint64, stdin *os.File) error {
 	p.stdinLock.Lock()
 	defer p.stdinLock.Unlock()
 
-	if _, exist := p.stdinList[seq]; exist == true {
+	if _, exist := p.stdinList[seq]; exist {
 		return fmt.Errorf("Sequence number %d already registered", seq)
 	}
 
@@ -261,6 +331,41 @@ func (p *pod) closeChannels() {
 		p.tty.Close()
 		p.tty = nil
 	}
+}
+
+func (p *pod) setupUsersAndGroups() error {
+
+	// Check /etc/passwd for users
+	if _, err := os.Stat(defaultPassword); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+
+		if _, err := os.Stat(statelessPassword); err != nil {
+			return err
+		}
+
+		if err := fileCopy(statelessPassword, defaultPassword); err != nil {
+			return err
+		}
+	}
+
+	// Check /etc/group for groups
+	if _, err := os.Stat(defaultGroup); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+
+		if _, err := os.Stat(statelessGroup); err != nil {
+			return err
+		}
+
+		if err := fileCopy(statelessGroup, defaultGroup); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func findVirtualSerialPath(serialName string) (string, error) {
@@ -433,55 +538,96 @@ func (p *pod) closeProcessStreams(cid, pid string) {
 // Executed as a go routine to route stdout and stderr to the TTY channel.
 func (p *pod) routeOutput(seq uint64, stream *os.File) {
 	for {
-		buf := make([]byte, 4096)
-		if _, err := stream.Read(buf); err != nil {
+		buf := make([]byte, 1024)
+		n, err := stream.Read(buf)
+		if err != nil {
 			fmt.Printf("Stream %d closed: %s\n", seq, err)
 			break
 		}
 
-		p.sendSeq(seq, buf)
+		fmt.Printf("Read from stream seq %d: %q\n", seq, string(buf[:n]))
+		p.sendSeq(seq, buf[:n])
 	}
 }
 
-// Executed as go routine to run and wait for the process.
-func (p *pod) runContainerProcess(cid, pid string) {
-	go p.routeOutput(p.containers[cid].processes[pid].seqStdio, p.containers[cid].processes[pid].stdout)
+func setConsoleCarriageReturn(fd uintptr) error {
+	var termios syscall.Termios
 
-	go p.routeOutput(p.containers[cid].processes[pid].seqStderr, p.containers[cid].processes[pid].stderr)
+	if err := ioctl(fd, syscall.TCGETS, uintptr(unsafe.Pointer(&termios))); err != nil {
+		return err
+	}
+
+	termios.Oflag |= syscall.ONLCR
+
+	if err := ioctl(fd, syscall.TCSETS, uintptr(unsafe.Pointer(&termios))); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Executed as go routine to run and wait for the process.
+func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan bool) error {
+	defer delete(p.containers[cid].processes, pid)
+	defer p.closeProcessStreams(cid, pid)
 
 	if err := p.containers[cid].container.Run(&(p.containers[cid].processes[pid].process)); err != nil {
 		fmt.Printf("Could not run process: %s\n", err)
-		p.closeProcessStreams(cid, pid)
-		delete(p.containers[cid].processes, pid)
-		return
+		return err
 	}
+
+	if terminal {
+		termMaster, err := utils.RecvFd(p.containers[cid].processes[pid].consoleSock)
+		if err != nil {
+			return err
+		}
+
+		if err := setConsoleCarriageReturn(termMaster.Fd()); err != nil {
+			return err
+		}
+
+		p.containers[cid].processes[pid].termMaster = termMaster
+
+		if err := p.registerStdin(p.containers[cid].processes[pid].seqStdio, termMaster); err != nil {
+			return err
+		}
+
+		go p.routeOutput(p.containers[cid].processes[pid].seqStdio, termMaster)
+	} else {
+		if p.containers[cid].processes[pid].stdout != nil {
+			go p.routeOutput(p.containers[cid].processes[pid].seqStdio, p.containers[cid].processes[pid].stdout)
+		}
+
+		if p.containers[cid].processes[pid].stderr != nil {
+			go p.routeOutput(p.containers[cid].processes[pid].seqStderr, p.containers[cid].processes[pid].stderr)
+		}
+	}
+
+	close(started)
 
 	processState, err := p.containers[cid].processes[pid].process.Wait()
 	if err != nil {
 		fmt.Printf("Error while waiting for process to finish: %s\n", err)
-		p.closeProcessStreams(cid, pid)
-		delete(p.containers[cid].processes, pid)
-		return
 	}
-
-	p.closeProcessStreams(cid, pid)
 
 	// Send empty message on tty channel to close the IO stream
 	p.sendSeq(p.containers[cid].processes[pid].seqStdio, []byte{})
 
 	// Get exit code
 	exitCode := uint8(255)
-	if waitStatus, ok := processState.Sys().(syscall.WaitStatus); ok {
-		exitCode = uint8(waitStatus.ExitStatus())
+	if processState != nil {
+		if waitStatus, ok := processState.Sys().(syscall.WaitStatus); ok {
+			exitCode = uint8(waitStatus.ExitStatus())
+		}
 	}
 
 	// Send exit code through tty channel
 	p.sendSeq(p.containers[cid].processes[pid].seqStdio, []byte{exitCode})
 
-	delete(p.containers[cid].processes, pid)
+	return nil
 }
 
-func (p *pod) buildProcess(hyperProcess hyper.Process) (*process, error) {
+func (p *pod) buildProcessWithoutTerminal(proc *process) (*process, error) {
 	rStdin, wStdin, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -497,28 +643,57 @@ func (p *pod) buildProcess(hyperProcess hyper.Process) (*process, error) {
 		return nil, err
 	}
 
-	if err := p.registerStdin(hyperProcess.Stdio, wStdin); err != nil {
+	if err := p.registerStdin(proc.seqStdio, wStdin); err != nil {
 		return nil, err
 	}
 
-	libContProcess := libcontainer.Process{
-		Cwd:    hyperProcess.Workdir,
-		Args:   hyperProcess.Args,
-		Env:    hyperProcess.Envs,
-		User:   hyperProcess.User,
-		Stdin:  rStdin,
-		Stdout: wStdout,
-		Stderr: wStderr,
+	proc.process.Stdin = rStdin
+	proc.process.Stdout = wStdout
+	proc.process.Stderr = wStderr
+
+	proc.stdin = wStdin
+	proc.stdout = rStdout
+	proc.stderr = rStderr
+
+	return proc, nil
+}
+
+func (p *pod) buildProcessWithTerminal(proc *process) (*process, error) {
+	parentSock, childSock, err := utils.NewSockPair("console")
+	if err != nil {
+		return nil, err
 	}
 
-	return &process{
+	proc.process.ConsoleSocket = childSock
+
+	proc.consoleSock = parentSock
+
+	return proc, nil
+}
+
+func (p *pod) buildProcess(hyperProcess hyper.Process) (*process, error) {
+	var envList []string
+	for _, env := range hyperProcess.Envs {
+		envList = append(envList, fmt.Sprintf("%s=%s", env.Env, env.Value))
+	}
+
+	libContProcess := libcontainer.Process{
+		Cwd:  hyperProcess.Workdir,
+		Args: hyperProcess.Args,
+		Env:  envList,
+	}
+
+	proc := &process{
 		process:   libContProcess,
-		stdin:     wStdin,
-		stdout:    rStdout,
-		stderr:    rStderr,
 		seqStdio:  hyperProcess.Stdio,
 		seqStderr: hyperProcess.Stderr,
-	}, nil
+	}
+
+	if hyperProcess.Terminal {
+		return p.buildProcessWithTerminal(proc)
+	}
+
+	return p.buildProcessWithoutTerminal(proc)
 }
 
 func (p *pod) runCmd(cmd hyper.HyperCmd, data []byte) error {
@@ -547,7 +722,11 @@ func startPodCb(pod *pod, data []byte) error {
 
 	pod.id = payload.ID
 	pod.running = true
-	pod.network = payload.Network
+	pod.network = hyper.Network{
+		Interfaces: payload.Interfaces,
+		DNS:        payload.DNS,
+		Routes:     payload.Routes,
+	}
 
 	if err := pod.setupNetwork(); err != nil {
 		return fmt.Errorf("Could not setup the network: %s", err)
@@ -593,11 +772,15 @@ func newContainerCb(pod *pod, data []byte) error {
 		return err
 	}
 
+	if payload.Process.ID == "" {
+		payload.Process.ID = fmt.Sprintf("%d", payload.Process.Stdio)
+	}
+
 	if _, exist := pod.containers[payload.ID]; exist == true {
 		return fmt.Errorf("Container %s already existing, impossible to start", payload.ID)
 	}
 
-	absoluteRootFs, err := mountContainerRootFs(payload.ID, payload.RootFs)
+	absoluteRootFs, err := mountContainerRootFs(payload.ID, payload.Image, payload.RootFs)
 	if err != nil {
 		return err
 	}
@@ -605,15 +788,19 @@ func newContainerCb(pod *pod, data []byte) error {
 	defaultMountFlags := syscall.MS_NOEXEC | syscall.MS_NOSUID | syscall.MS_NODEV
 
 	config := configs.Config{
-		Rootfs:       absoluteRootFs,
-		Capabilities: &configs.Capabilities{},
+		Rootfs: absoluteRootFs,
+		Capabilities: &configs.Capabilities{
+			Bounding:    capsList,
+			Effective:   capsList,
+			Inheritable: capsList,
+			Permitted:   capsList,
+			Ambient:     capsList,
+		},
 		Namespaces: configs.Namespaces([]configs.Namespace{
 			{Type: configs.NEWNS},
 			{Type: configs.NEWUTS},
 			{Type: configs.NEWIPC},
 			{Type: configs.NEWPID},
-			{Type: configs.NEWUSER},
-			{Type: configs.NEWNET},
 		}),
 		Cgroups: &configs.Cgroup{
 			Name:   payload.ID,
@@ -665,22 +852,7 @@ func newContainerCb(pod *pod, data []byte) error {
 				Source:      "sysfs",
 				Destination: "/sys",
 				Device:      "sysfs",
-				Flags:       defaultMountFlags | syscall.MS_RDONLY,
-			},
-		},
-
-		UidMappings: []configs.IDMap{
-			{
-				ContainerID: 0,
-				HostID:      0,
-				Size:        65536,
-			},
-		},
-		GidMappings: []configs.IDMap{
-			{
-				ContainerID: 0,
-				HostID:      0,
-				Size:        65536,
+				Flags:       defaultMountFlags | unix.MS_RDONLY,
 			},
 		},
 	}
@@ -712,7 +884,10 @@ func newContainerCb(pod *pod, data []byte) error {
 
 	pod.containers[payload.ID] = container
 
-	go pod.runContainerProcess(payload.ID, payload.Process.ID)
+	started := make(chan bool)
+	go pod.runContainerProcess(payload.ID, payload.Process.ID, payload.Process.Terminal, started)
+
+	<-started
 
 	return nil
 }
@@ -787,6 +962,10 @@ func execCb(pod *pod, data []byte) error {
 		return err
 	}
 
+	if payload.Process.ID == "" {
+		payload.Process.ID = fmt.Sprintf("%d", payload.Process.Stdio)
+	}
+
 	if _, exist := pod.containers[payload.ContainerID]; exist == false {
 		return fmt.Errorf("Container %s not found, impossible to execute process %s", payload.ContainerID, payload.Process.ID)
 	}
@@ -811,7 +990,10 @@ func execCb(pod *pod, data []byte) error {
 
 	pod.containers[payload.ContainerID].processes[payload.Process.ID] = process
 
-	go pod.runContainerProcess(payload.ContainerID, payload.Process.ID)
+	started := make(chan bool)
+	go pod.runContainerProcess(payload.ContainerID, payload.Process.ID, payload.Process.Terminal, started)
+
+	<-started
 
 	return nil
 }
@@ -822,6 +1004,18 @@ func readyCb(pod *pod, data []byte) error {
 
 func pingCb(pod *pod, data []byte) error {
 	return nil
+}
+
+func (p *pod) findTermFromSeqID(seqID uint64) (*os.File, string, error) {
+	for cid, container := range p.containers {
+		for _, process := range container.processes {
+			if process.seqStdio == seqID {
+				return process.termMaster, cid, nil
+			}
+		}
+	}
+
+	return nil, "", fmt.Errorf("Could not find a process with SeqID %d", seqID)
 }
 
 func winsizeCb(pod *pod, data []byte) error {
@@ -835,26 +1029,18 @@ func winsizeCb(pod *pod, data []byte) error {
 		return err
 	}
 
-	if _, exist := pod.containers[payload.ContainerID]; exist == false {
-		return fmt.Errorf("Container %s not found, impossible to resize the window", payload.ContainerID)
+	term, cid, err := pod.findTermFromSeqID(payload.Sequence)
+	if err != nil {
+		return err
 	}
 
-	status, err := pod.containers[payload.ContainerID].container.Status()
+	status, err := pod.containers[cid].container.Status()
 	if err != nil {
 		return err
 	}
 
 	if status != libcontainer.Running {
-		return fmt.Errorf("Container %s not running, impossible to resize window", payload.ContainerID)
-	}
-
-	if _, exist := pod.containers[payload.ContainerID].processes[payload.ProcessID]; exist == false {
-		return fmt.Errorf("Process %s does not exist on container %s, impossible to resize window", payload.ProcessID, payload.ContainerID)
-	}
-
-	ptmx, err := os.Open("/dev/pts/ptmx")
-	if err != nil {
-		return fmt.Errorf("Could not open /dev/pts/ptmx: %s", err)
+		return fmt.Errorf("Container %s not running, impossible to resize window", cid)
 	}
 
 	window := new(struct {
@@ -865,7 +1051,7 @@ func winsizeCb(pod *pod, data []byte) error {
 	})
 
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
-		ptmx.Fd(),
+		term.Fd(),
 		syscall.TIOCGWINSZ,
 		uintptr(unsafe.Pointer(window))); errno != 0 {
 		return fmt.Errorf("Could not get window size: %s", errno.Error())
@@ -875,7 +1061,7 @@ func winsizeCb(pod *pod, data []byte) error {
 	window.Col = payload.Column
 
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
-		ptmx.Fd(),
+		term.Fd(),
 		syscall.TIOCSWINSZ,
 		uintptr(unsafe.Pointer(window))); errno != 0 {
 		return fmt.Errorf("Could not set window size: %s", errno.Error())

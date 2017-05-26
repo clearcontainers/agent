@@ -17,7 +17,6 @@
 package api
 
 import (
-	"net"
 	"syscall"
 )
 
@@ -26,17 +25,30 @@ type HyperCmd uint32
 
 // Control command string IDs
 const (
-	StartPodCmd HyperCmd = iota
+	VersionCmd HyperCmd = iota
+	StartPodCmd
+	GetPodDeprecatedCmd
+	StopPodDeprecatedCmd
 	DestroyPodCmd
-	NewContainerCmd
-	KillContainerCmd
-	RemoveContainerCmd
+	RestartContainerDeprecatedCmd
 	ExecCmd
+	FinishCmdDeprecatedCmd
 	ReadyCmd
 	AckCmd
 	ErrorCmd
-	PingCmd
 	WinsizeCmd
+	PingCmd
+	FinishPodDeprecatedCmd
+	NextCmd
+	WriteFileCmd
+	ReadFileCmd
+	NewContainerCmd
+	KillContainerCmd
+	OnlineCPUMemCmd
+	SetupInterfaceCmd
+	SetupRouteCmd
+	RemoveContainerCmd
+	ProcessAsyncEventCmd
 )
 
 var stringCmdList = map[HyperCmd]string{
@@ -53,20 +65,26 @@ var stringCmdList = map[HyperCmd]string{
 	WinsizeCmd:         "winsize",
 }
 
+// IPAddress describes an IP address and its network mask.
+type IPAddress struct {
+	IPAddr  string `json:"ipAddress"`
+	NetMask string `json:"netMask"`
+}
+
 // NetIface describes a pod network interface.
 type NetIface struct {
-	HwAddr  net.HardwareAddr `json:"hwAddr"`
-	Name    string           `json:"name"`
-	IPAddr  string           `json:"ipAddr"`
-	NetMask string           `json:"netMask"`
+	Name        string      `json:"newDeviceName"`
+	IPAddresses []IPAddress `json:"ipAddresses"`
+	MTU         string      `json:"mtu"`
+	HwAddr      string      `json:"macAddr"`
 }
 
 // Route describes a pod network route.
 type Route struct {
 	Src     string `json:"src"`
 	Dest    string `json:"dest"`
-	Gateway string `json:"gateway"`
-	Device  string `json:"device"`
+	Gateway string `json:"gateway,omitempty"`
+	Device  string `json:"device,omitempty"`
 }
 
 // Network fully describes a pod network with its interfaces, routes and dns
@@ -77,17 +95,24 @@ type Network struct {
 	Routes     []Route    `json:"routes"`
 }
 
+// EnvironmentVar describes an environment variable and its value.
+type EnvironmentVar struct {
+	Env   string `json:"env"`
+	Value string `json:"value"`
+}
+
 // Process describes a process running on a container.
 type Process struct {
-	ID       string   `json:"id"`
-	User     string   `json:"user,omitempty"`
-	Group    string   `json:"group,omitempty"`
-	Terminal bool     `json:"terminal"`
-	Stdio    uint64   `json:"stdio,omitempty"`
-	Stderr   uint64   `json:"stderr,omitempty"`
-	Args     []string `json:"args"`
-	Envs     []string `json:"envs,omitempty"`
-	Workdir  string   `json:"workdir"`
+	ID               string           `json:"id"`
+	User             string           `json:"user,omitempty"`
+	Group            string           `json:"group,omitempty"`
+	AdditionalGroups []string         `json:"additionalGroups,omitempty"`
+	Terminal         bool             `json:"terminal"`
+	Stdio            uint64           `json:"stdio"`
+	Stderr           uint64           `json:"stderr"`
+	Args             []string         `json:"args"`
+	Envs             []EnvironmentVar `json:"envs,omitempty"`
+	Workdir          string           `json:"workdir"`
 }
 
 // DecodedMessage describes messages going through CTL channel.
@@ -104,41 +129,44 @@ type TtyMessage struct {
 
 // StartPod describes the format expected by a STARTPOD command.
 type StartPod struct {
-	ID       string  `json:"id"`
-	ShareDir string  `json:"shareDir"`
-	Network  Network `json:"network"`
+	ID         string     `json:"hostname"`
+	Interfaces []NetIface `json:"interfaces,omitempty"`
+	DNS        []string   `json:"dns,omitempty"`
+	Routes     []Route    `json:"routes,omitempty"`
+	ShareDir   string     `json:"shareDir"`
 }
 
 // NewContainer describes the format expected by a NEWCONTAINER command.
 type NewContainer struct {
 	ID      string  `json:"id"`
 	RootFs  string  `json:"rootfs"`
+	Image   string  `json:"image"`
 	Process Process `json:"process"`
 }
 
 // KillContainer describes the format expected by a KILLCONTAINER command.
 type KillContainer struct {
-	ID     string         `json:"id"`
-	Signal syscall.Signal `json:"signal"`
+	ID           string         `json:"container"`
+	Signal       syscall.Signal `json:"signal"`
+	AllProcesses bool           `json:"allProcesses"`
 }
 
 // RemoveContainer describes the format expected by a REMOVECONTAINER command.
 type RemoveContainer struct {
-	ID string `json:"id"`
+	ID string `json:"container"`
 }
 
 // Exec describes the format expected by a EXECCMD command.
 type Exec struct {
-	ContainerID string  `json:"containerId"`
+	ContainerID string  `json:"container"`
 	Process     Process `json:"process"`
 }
 
 // Winsize describes the format expected by a WINSIZE command.
 type Winsize struct {
-	ContainerID string `json:"container"`
-	ProcessID   string `json:"process"`
-	Row         uint16 `json:"row"`
-	Column      uint16 `json:"column"`
+	Sequence uint64 `json:"seq"`
+	Row      uint16 `json:"row"`
+	Column   uint16 `json:"column"`
 }
 
 // CmdToString translates a command into its corresponding string.
