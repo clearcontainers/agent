@@ -104,19 +104,36 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 
 func setupRoutes(routes []hyper.Route) error {
 	for _, route := range routes {
-		_, dst, err := net.ParseCIDR(route.Dest)
+		var dst *net.IPNet
+		var err error
+
+		if route.Dest != "" && route.Dest != "default" {
+			_, dst, err = net.ParseCIDR(route.Dest)
+			if err != nil {
+				return fmt.Errorf("Could not parse route destination %s: %s", route.Dest, err)
+			}
+		}
+
+		// Find link index from route's device name
+		link, err := netlink.LinkByName(route.Device)
 		if err != nil {
-			return fmt.Errorf("Could not parse route destination %s: %s", route.Dest, err)
+			return fmt.Errorf("Could not find link from device name %s: %s", route.Device, err)
+		}
+
+		linkAttrs := link.Attrs()
+		if linkAttrs == nil {
+			return fmt.Errorf("Could not find link index for device %s", route.Device)
 		}
 
 		netRoute := &netlink.Route{
-			Dst: dst,
-			Src: net.ParseIP(route.Src),
-			Gw:  net.ParseIP(route.Gateway),
+			LinkIndex: linkAttrs.Index,
+			Dst:       dst,
+			Src:       net.ParseIP(route.Src),
+			Gw:        net.ParseIP(route.Gateway),
 		}
 
-		if err := netlink.RouteAdd(netRoute); err != nil {
-			return fmt.Errorf("Could not add route dest(%s)/src(%s)/gw(%s)/dev(%s): %s", route.Dest, route.Src, route.Gateway, route.Device, err)
+		if err := netlink.RouteReplace(netRoute); err != nil {
+			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %s", route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 	}
 
@@ -132,7 +149,6 @@ func (p *pod) setupNetwork() error {
 		return fmt.Errorf("Could not setup network interfaces: %s", err)
 	}
 
-/*
 	if err := setupRoutes(p.network.Routes); err != nil {
 		return fmt.Errorf("Could not setup network routes: %s", err)
 	}
@@ -140,7 +156,6 @@ func (p *pod) setupNetwork() error {
 	if err := setupDNS(p.network.DNS); err != nil {
 		return fmt.Errorf("Could not setup network DNS: %s", err)
 	}
-*/
 
 	return nil
 }
@@ -203,7 +218,6 @@ func (p *pod) removeNetwork() error {
 		return fmt.Errorf("Could not remove network interfaces: %s", err)
 	}
 
-/*
 	if err := removeRoutes(p.network.Routes); err != nil {
 		return fmt.Errorf("Could not remove network routes: %s", err)
 	}
@@ -211,7 +225,6 @@ func (p *pod) removeNetwork() error {
 	if err := removeDNS(p.network.DNS); err != nil {
 		return fmt.Errorf("Could not remove network DNS: %s", err)
 	}
-*/
 
 	return nil
 }
