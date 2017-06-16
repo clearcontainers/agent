@@ -6,7 +6,7 @@ This project holds the code related to a virtual machine agent relying on the co
 The code relies heavily on [libcontainer](https://github.com/opencontainers/runc/tree/master/libcontainer) so that we can reuse as much as possible the code used by `runc` (standard to run containers on bare metal).
 
 ## Requirements
-We need the guest kernel to include the following configurations enabled:
-- CONFIG_KEYS=y
-- CONFIG_COMPAT=y
-- CONFIG_KEYS_COMPAT=y
+We need the guest kernel to enable CONFIG_KEYS, otherwise we get the following error from libcontainer:
+```
+Could not run process 1: container_linux.go:259: starting container process caused "process_linux.go:345: container init caused "could not create session key: function not implemented"
+```
