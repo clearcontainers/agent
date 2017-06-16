@@ -31,6 +31,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/Sirupsen/logrus"
 	hyper "github.com/clearcontainers/agent/api"
 	"github.com/opencontainers/runc/libcontainer"
 	"github.com/opencontainers/runc/libcontainer/configs"
@@ -144,13 +145,15 @@ var callbackList = map[hyper.HyperCmd]cmdCb{
 	hyper.WinsizeCmd:         winsizeCb,
 }
 
+var agentLog = logrus.New()
+
 func init() {
 	if len(os.Args) > 1 && os.Args[1] == "init" {
 		runtime.GOMAXPROCS(1)
 		runtime.LockOSThread()
 		factory, _ := libcontainer.New("")
 		if err := factory.StartInitialization(); err != nil {
-			fmt.Printf("init went wrong: %s\n", err)
+			agentLog.Infof("init went wrong: %v", err)
 		}
 		panic("--this line should have never been executed, congratulations--")
 	}
@@ -171,14 +174,14 @@ func main() {
 
 	// Open serial ports and write on both CTL and TTY channels
 	if err := pod.openChannels(); err != nil {
-		fmt.Printf("Could not open channels: %s\n", err)
+		agentLog.Errorf("Could not open channels: %v", err)
 		return
 	}
 	defer pod.closeChannels()
 
 	// Setup users and groups
 	if err := pod.setupUsersAndGroups(); err != nil {
-		fmt.Printf("Could not setup users and groups: %s\n", err)
+		agentLog.Errorf("Could not setup users and groups: %v", err)
 		return
 	}
 
@@ -192,9 +195,12 @@ func main() {
 }
 
 func (p *pod) controlLoop(wg *sync.WaitGroup) {
+	exitLoop := false
+
 	// Send READY right after it has connected.
 	if err := p.sendCmd(hyper.ReadyCmd, []byte{}); err != nil {
-		fmt.Printf("Could not send READY message: %s\n", err)
+		agentLog.Errorf("Could not send 'ready' command: %v", err)
+		goto out
 	}
 
 	for {
@@ -206,23 +212,29 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 				continue
 			}
 
-			fmt.Printf("CTL channel read failed: %s\n", err)
+			agentLog.Infof("Read on ctl channel failed: %v", err)
 			break
 		}
 
-		fmt.Printf("Command received %s\n", hyper.CmdToString(cmd))
+		agentLog.Infof("Received %q command", hyper.CmdToString(cmd))
 
 		if err := p.runCmd(cmd, data); err != nil {
-			fmt.Printf("%s error: %s\n", hyper.CmdToString(cmd), err)
+			agentLog.Errorf("Run %q command failed: %v", hyper.CmdToString(cmd), err)
 			reply = hyper.ErrorCmd
+			exitLoop = true
 		}
 
 		if err := p.sendCmd(reply, []byte{}); err != nil {
-			fmt.Printf("CTL channel reply failed: %s\n", err)
+			agentLog.Errorf("Send reply on ctl channel failed: %v", err)
+			break
+		}
+
+		if exitLoop {
 			break
 		}
 	}
 
+out:
 	wg.Done()
 }
 
@@ -236,38 +248,38 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 				continue
 			}
 
-			fmt.Printf("TTY channel read failed: %s\n", err)
+			agentLog.Infof("Read on tty channel failed: %v", err)
 			break
 		}
 
-		fmt.Printf("Read from TTY\n")
+		agentLog.Infof("Read from TTY\n")
 
 		if seq == uint64(0) || data == nil {
 			continue
 		}
 
-		fmt.Printf("Read from TTY: %d, %s\n", seq, string(data))
+		agentLog.Infof("Read from tty: sequence %d / message %s", seq, string(data))
 
 		// Lock the list before we access it.
 		p.stdinLock.Lock()
 
 		file, exist := p.stdinList[seq]
 		if !exist {
-			fmt.Printf("SEQ %d not found for STDIN\n", seq)
+			agentLog.Infof("Sequence %d not found for stdin", seq)
 			p.stdinLock.Unlock()
 			continue
 		}
 
 		p.stdinLock.Unlock()
 
-		fmt.Printf("SEQ found, write data to the stdin\n")
+		agentLog.Infof("Sequence %d found, writing data to stdin", seq)
 
 		n, err := file.Write(data)
 		if err != nil {
-			fmt.Printf("Error while writing to container process stdin: %s\n", err)
+			agentLog.Errorf("Write to process stdin failed: %v", err)
 		}
 
-		fmt.Printf("%d bytes written out of %d\n", n, len(data))
+		agentLog.Infof("%d bytes written out of %d", n, len(data))
 	}
 
 	wg.Done()
@@ -405,7 +417,8 @@ func (p *pod) readCtl() (hyper.HyperCmd, []byte, error) {
 	}
 
 	if n != ctlHeaderSize {
-		return hyper.ErrorCmd, []byte{}, fmt.Errorf("Only %d bytes read out of %d expected", n, ctlHeaderSize)
+		return hyper.ErrorCmd, []byte{},
+			fmt.Errorf("Only %d bytes read out of %d expected (ctl channel)", n, ctlHeaderSize)
 	}
 
 	cmd := hyper.HyperCmd(binary.BigEndian.Uint32(buf[:4]))
@@ -423,7 +436,8 @@ func (p *pod) readCtl() (hyper.HyperCmd, []byte, error) {
 	}
 
 	if n != length {
-		return hyper.ErrorCmd, []byte{}, fmt.Errorf("Only %d bytes read out of %d expected", n, length)
+		return hyper.ErrorCmd, []byte{},
+			fmt.Errorf("Only %d bytes read out of %d expected (ctl channel)", n, length)
 	}
 
 	return cmd, data, nil
@@ -438,7 +452,8 @@ func (p *pod) readTty() (uint64, []byte, error) {
 	}
 
 	if n != ttyHeaderSize {
-		return uint64(0), []byte{}, fmt.Errorf("Only %d bytes read out of %d expected", n, ttyHeaderSize)
+		return uint64(0), []byte{},
+			fmt.Errorf("Only %d bytes read out of %d expected (tty channel)", n, ttyHeaderSize)
 	}
 
 	seq := binary.BigEndian.Uint64(buf[:8])
@@ -456,7 +471,8 @@ func (p *pod) readTty() (uint64, []byte, error) {
 	}
 
 	if n != length {
-		return uint64(0), []byte{}, fmt.Errorf("Only %d bytes read out of %d expected", n, length)
+		return uint64(0), []byte{},
+			fmt.Errorf("Only %d bytes read out of %d expected (tty channel)", n, length)
 	}
 
 	return seq, data, nil
@@ -473,7 +489,7 @@ func (p *pod) sendCmd(cmd hyper.HyperCmd, data []byte) error {
 	if dataLen > 0 {
 		bytesCopied := copy(buf[ctlHeaderSize:], data)
 		if bytesCopied != dataLen {
-			return fmt.Errorf("Only %d bytes copied out of %d expected", bytesCopied, dataLen)
+			return fmt.Errorf("Only %d bytes copied out of %d expected (ctl channel)", bytesCopied, dataLen)
 		}
 	}
 
@@ -483,7 +499,7 @@ func (p *pod) sendCmd(cmd hyper.HyperCmd, data []byte) error {
 	}
 
 	if n != length {
-		return fmt.Errorf("Only %d bytes written out of %d expected", n, length)
+		return fmt.Errorf("Only %d bytes written out of %d expected (ctl channel)", n, length)
 	}
 
 	return nil
@@ -503,7 +519,7 @@ func (p *pod) sendSeq(seq uint64, data []byte) error {
 	if dataLen > 0 {
 		bytesCopied := copy(buf[ttyHeaderSize:], data)
 		if bytesCopied != dataLen {
-			return fmt.Errorf("Only %d bytes copied out of %d expected", bytesCopied, dataLen)
+			return fmt.Errorf("Only %d bytes copied out of %d expected (tty channel)", bytesCopied, dataLen)
 		}
 	}
 
@@ -513,7 +529,7 @@ func (p *pod) sendSeq(seq uint64, data []byte) error {
 	}
 
 	if n != length {
-		return fmt.Errorf("Only %d bytes written out of %d expected", n, length)
+		return fmt.Errorf("Only %d bytes written out of %d expected (tty channel)", n, length)
 	}
 
 	return nil
@@ -521,15 +537,15 @@ func (p *pod) sendSeq(seq uint64, data []byte) error {
 
 func (p *pod) closeProcessStreams(cid, pid string) {
 	if err := p.containers[cid].processes[pid].stderr.Close(); err != nil {
-		fmt.Printf("Could not close stderr for container %s, process %s: %s\n", cid, pid, err)
+		agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
 	}
 
 	if err := p.containers[cid].processes[pid].stdout.Close(); err != nil {
-		fmt.Printf("Could not close stdout for container %s, process %s: %s\n", cid, pid, err)
+		agentLog.Warnf("Could not close stdout for container %s, process %s: %v", cid, pid, err)
 	}
 
 	if err := p.containers[cid].processes[pid].stdin.Close(); err != nil {
-		fmt.Printf("Could not close stdin for container %s, process %s: %s\n", cid, pid, err)
+		agentLog.Warnf("Could not close stdin for container %s, process %s: %v", cid, pid, err)
 	}
 
 	p.unregisterStdin(p.containers[cid].processes[pid].seqStdio)
@@ -541,11 +557,11 @@ func (p *pod) routeOutput(seq uint64, stream *os.File) {
 		buf := make([]byte, 1024)
 		n, err := stream.Read(buf)
 		if err != nil {
-			fmt.Printf("Stream %d closed: %s\n", seq, err)
+			agentLog.Infof("Stream %d has been closed: %v", seq, err)
 			break
 		}
 
-		fmt.Printf("Read from stream seq %d: %q\n", seq, string(buf[:n]))
+		agentLog.Infof("Read from stream seq %d: %q", seq, string(buf[:n]))
 		p.sendSeq(seq, buf[:n])
 	}
 }
@@ -572,7 +588,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan b
 	defer p.closeProcessStreams(cid, pid)
 
 	if err := p.containers[cid].container.Run(&(p.containers[cid].processes[pid].process)); err != nil {
-		fmt.Printf("Could not run process: %s\n", err)
+		agentLog.Errorf("Could not run process %s: %v", pid, err)
 		return err
 	}
 
@@ -607,7 +623,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan b
 
 	processState, err := p.containers[cid].processes[pid].process.Wait()
 	if err != nil {
-		fmt.Printf("Error while waiting for process to finish: %s\n", err)
+		agentLog.Infof("Wait for process %s failed: %v", pid, err)
 	}
 
 	// Send empty message on tty channel to close the IO stream
@@ -699,7 +715,7 @@ func (p *pod) buildProcess(hyperProcess hyper.Process) (*process, error) {
 func (p *pod) runCmd(cmd hyper.HyperCmd, data []byte) error {
 	cb, exist := callbackList[cmd]
 	if exist == false {
-		return fmt.Errorf("No callback found for command '%s'", hyper.CmdToString(cmd))
+		return fmt.Errorf("No callback found for command %q", hyper.CmdToString(cmd))
 	}
 
 	return cb(p, data)
@@ -729,7 +745,7 @@ func startPodCb(pod *pod, data []byte) error {
 	}
 
 	if err := pod.setupNetwork(); err != nil {
-		return fmt.Errorf("Could not setup the network: %s", err)
+		return fmt.Errorf("Could not setup the network: %v", err)
 	}
 
 	return nil
@@ -749,7 +765,7 @@ func destroyPodCb(pod *pod, data []byte) error {
 	}
 
 	if err := pod.removeNetwork(); err != nil {
-		return fmt.Errorf("Could not remove the network: %s", err)
+		return fmt.Errorf("Could not remove the network: %v", err)
 	}
 
 	pod.id = ""
@@ -765,7 +781,7 @@ func newContainerCb(pod *pod, data []byte) error {
 	var payload hyper.NewContainer
 
 	if pod.running == false {
-		return fmt.Errorf("Pod not started, impossible to start a new container")
+		return fmt.Errorf("Pod not started, impossible to run a new container")
 	}
 
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -777,7 +793,7 @@ func newContainerCb(pod *pod, data []byte) error {
 	}
 
 	if _, exist := pod.containers[payload.ID]; exist == true {
-		return fmt.Errorf("Container %s already existing, impossible to start", payload.ID)
+		return fmt.Errorf("Container %s already exists, impossible to create", payload.ID)
 	}
 
 	absoluteRootFs, err := mountContainerRootFs(payload.ID, payload.Image, payload.RootFs)
@@ -1015,7 +1031,7 @@ func (p *pod) findTermFromSeqID(seqID uint64) (*os.File, string, error) {
 		}
 	}
 
-	return nil, "", fmt.Errorf("Could not find a process with SeqID %d", seqID)
+	return nil, "", fmt.Errorf("Could not find a process related to sequence %d", seqID)
 }
 
 func winsizeCb(pod *pod, data []byte) error {
@@ -1054,7 +1070,7 @@ func winsizeCb(pod *pod, data []byte) error {
 		term.Fd(),
 		syscall.TIOCGWINSZ,
 		uintptr(unsafe.Pointer(window))); errno != 0 {
-		return fmt.Errorf("Could not get window size: %s", errno.Error())
+		return fmt.Errorf("Could not get window size: %v", errno.Error())
 	}
 
 	window.Row = payload.Row
@@ -1064,7 +1080,7 @@ func winsizeCb(pod *pod, data []byte) error {
 		term.Fd(),
 		syscall.TIOCSWINSZ,
 		uintptr(unsafe.Pointer(window))); errno != 0 {
-		return fmt.Errorf("Could not set window size: %s", errno.Error())
+		return fmt.Errorf("Could not set window size: %v", errno.Error())
 	}
 
 	return nil

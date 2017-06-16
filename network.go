@@ -56,7 +56,7 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 	for _, iface := range ifaces {
 		var link netlink.Link
 		if iface.HwAddr != "" {
-			fmt.Printf("Get the interface from its MAC address %s\n", iface.HwAddr)
+			agentLog.Infof("Get the interface from its MAC address %q", iface.HwAddr)
 
 			// Find the interface link from its hardware address
 			var err error
@@ -65,14 +65,14 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 				return err
 			}
 
-			fmt.Printf("Link found %+v\n", link)
+			agentLog.Infof("Link found %+v", link)
 
 			// Rename it
 			if err := netlink.LinkSetName(link, iface.Name); err != nil {
 				return err
 			}
 		} else {
-			fmt.Printf("Get the interface from its name %s\n", iface.Name)
+			agentLog.Infof("Get the interface from its name %s", iface.Name)
 
 			// Find the interface link from its name
 			var err error
@@ -86,7 +86,7 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 			// Add an IP address
 			addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%s", ipAddress.IPAddr, ipAddress.NetMask))
 			if err != nil {
-				return fmt.Errorf("Could not parse the IP address %s: %s", ipAddress.IPAddr, err)
+				return fmt.Errorf("Could not parse the IP address %s: %v", ipAddress.IPAddr, err)
 			}
 			if err := netlink.AddrAdd(link, addr); err != nil {
 				return err
@@ -110,19 +110,19 @@ func setupRoutes(routes []hyper.Route) error {
 		if route.Dest != "" && route.Dest != "default" {
 			_, dst, err = net.ParseCIDR(route.Dest)
 			if err != nil {
-				return fmt.Errorf("Could not parse route destination %s: %s", route.Dest, err)
+				return fmt.Errorf("Could not parse route destination %s: %v", route.Dest, err)
 			}
 		}
 
 		// Find link index from route's device name
 		link, err := netlink.LinkByName(route.Device)
 		if err != nil {
-			return fmt.Errorf("Could not find link from device name %s: %s", route.Device, err)
+			return fmt.Errorf("Could not find link from device name %s: %v", route.Device, err)
 		}
 
 		linkAttrs := link.Attrs()
 		if linkAttrs == nil {
-			return fmt.Errorf("Could not find link index for device %s", route.Device)
+			return fmt.Errorf("Could not find link index for device %v", route.Device)
 		}
 
 		netRoute := &netlink.Route{
@@ -133,7 +133,7 @@ func setupRoutes(routes []hyper.Route) error {
 		}
 
 		if err := netlink.RouteReplace(netRoute); err != nil {
-			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %s", route.Dest, route.Src, route.Gateway, route.Device, err)
+			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %v", route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 	}
 
@@ -146,15 +146,15 @@ func setupDNS(dns []string) error {
 
 func (p *pod) setupNetwork() error {
 	if err := setupInterfaces(p.network.Interfaces); err != nil {
-		return fmt.Errorf("Could not setup network interfaces: %s", err)
+		return fmt.Errorf("Could not setup network interfaces: %v", err)
 	}
 
 	if err := setupRoutes(p.network.Routes); err != nil {
-		return fmt.Errorf("Could not setup network routes: %s", err)
+		return fmt.Errorf("Could not setup network routes: %v", err)
 	}
 
 	if err := setupDNS(p.network.DNS); err != nil {
-		return fmt.Errorf("Could not setup network DNS: %s", err)
+		return fmt.Errorf("Could not setup network DNS: %v", err)
 	}
 
 	return nil
@@ -177,7 +177,7 @@ func removeInterfaces(ifaces []hyper.NetIface) error {
 			// Remove the IP address
 			addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%s", ipAddress.IPAddr, ipAddress.NetMask))
 			if err != nil {
-				return fmt.Errorf("Could not parse the IP address %s: %s", ipAddress.IPAddr, err)
+				return fmt.Errorf("Could not parse the IP address %s: %v", ipAddress.IPAddr, err)
 			}
 			if err := netlink.AddrDel(link, addr); err != nil {
 				return err
@@ -192,7 +192,7 @@ func removeRoutes(routes []hyper.Route) error {
 	for _, route := range routes {
 		_, dst, err := net.ParseCIDR(route.Dest)
 		if err != nil {
-			return fmt.Errorf("Could not parse route destination %s: %s", route.Dest, err)
+			return fmt.Errorf("Could not parse route destination %s: %v", route.Dest, err)
 		}
 
 		netRoute := &netlink.Route{
@@ -202,7 +202,7 @@ func removeRoutes(routes []hyper.Route) error {
 		}
 
 		if err := netlink.RouteDel(netRoute); err != nil {
-			return fmt.Errorf("Could not remove route dest(%s)/src(%s)/gw(%s)/dev(%s): %s", route.Dest, route.Src, route.Gateway, route.Device, err)
+			return fmt.Errorf("Could not remove route dest(%s)/src(%s)/gw(%s)/dev(%s): %v", route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 	}
 
@@ -215,15 +215,15 @@ func removeDNS(dns []string) error {
 
 func (p *pod) removeNetwork() error {
 	if err := removeInterfaces(p.network.Interfaces); err != nil {
-		return fmt.Errorf("Could not remove network interfaces: %s", err)
+		return fmt.Errorf("Could not remove network interfaces: %v", err)
 	}
 
 	if err := removeRoutes(p.network.Routes); err != nil {
-		return fmt.Errorf("Could not remove network routes: %s", err)
+		return fmt.Errorf("Could not remove network routes: %v", err)
 	}
 
 	if err := removeDNS(p.network.DNS); err != nil {
-		return fmt.Errorf("Could not remove network DNS: %s", err)
+		return fmt.Errorf("Could not remove network DNS: %v", err)
 	}
 
 	return nil
