@@ -871,6 +871,8 @@ func newContainerCb(pod *pod, data []byte) error {
 				Flags:       defaultMountFlags | unix.MS_RDONLY,
 			},
 		},
+
+		NoNewKeyring: true,
 	}
 
 	containerPath := filepath.Join("/tmp/libcontainer", pod.id)
