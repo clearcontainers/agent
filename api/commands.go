@@ -57,7 +57,7 @@ var stringCmdList = map[HyperCmd]string{
 	NewContainerCmd:    "newcontainer",
 	KillContainerCmd:   "killcontainer",
 	RemoveContainerCmd: "removecontainer",
-	ExecCmd:            "exec",
+	ExecCmd:            "execcmd",
 	ReadyCmd:           "ready",
 	AckCmd:             "ack",
 	ErrorCmd:           "error",
