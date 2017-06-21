@@ -195,8 +195,6 @@ func main() {
 }
 
 func (p *pod) controlLoop(wg *sync.WaitGroup) {
-	exitLoop := false
-
 	// Send READY right after it has connected.
 	if err := p.sendCmd(hyper.ReadyCmd, []byte{}); err != nil {
 		agentLog.Errorf("Could not send 'ready' command: %v", err)
@@ -221,15 +219,10 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 		if err := p.runCmd(cmd, data); err != nil {
 			agentLog.Errorf("Run %q command failed: %v", hyper.CmdToString(cmd), err)
 			reply = hyper.ErrorCmd
-			exitLoop = true
 		}
 
 		if err := p.sendCmd(reply, []byte{}); err != nil {
 			agentLog.Errorf("Send reply on ctl channel failed: %v", err)
-			break
-		}
-
-		if exitLoop {
 			break
 		}
 	}
@@ -583,12 +576,13 @@ func setConsoleCarriageReturn(fd uintptr) error {
 }
 
 // Executed as go routine to run and wait for the process.
-func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan bool) error {
+func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan error) error {
 	defer delete(p.containers[cid].processes, pid)
 	defer p.closeProcessStreams(cid, pid)
 
 	if err := p.containers[cid].container.Run(&(p.containers[cid].processes[pid].process)); err != nil {
 		agentLog.Errorf("Could not run process %s: %v", pid, err)
+		started <- err
 		return err
 	}
 
@@ -619,7 +613,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan b
 		}
 	}
 
-	close(started)
+	started <- nil
 
 	processState, err := p.containers[cid].processes[pid].process.Wait()
 	if err != nil {
@@ -902,10 +896,17 @@ func newContainerCb(pod *pod, data []byte) error {
 
 	pod.containers[payload.ID] = container
 
-	started := make(chan bool)
+	started := make(chan error)
 	go pod.runContainerProcess(payload.ID, payload.Process.ID, payload.Process.Terminal, started)
 
-	<-started
+	select {
+	case err := <-started:
+		if err != nil {
+			return fmt.Errorf("Process could not be started: %v", err)
+		}
+	case <-time.After(time.Duration(5) * time.Second):
+		return fmt.Errorf("Process could not be started: timeout error")
+	}
 
 	return nil
 }
@@ -1008,10 +1009,17 @@ func execCb(pod *pod, data []byte) error {
 
 	pod.containers[payload.ContainerID].processes[payload.Process.ID] = process
 
-	started := make(chan bool)
+	started := make(chan error)
 	go pod.runContainerProcess(payload.ContainerID, payload.Process.ID, payload.Process.Terminal, started)
 
-	<-started
+	select {
+	case err := <-started:
+		if err != nil {
+			return fmt.Errorf("Process could not be started: %v", err)
+		}
+	case <-time.After(time.Duration(5) * time.Second):
+		return fmt.Errorf("Process could not be started: timeout error")
+	}
 
 	return nil
 }
