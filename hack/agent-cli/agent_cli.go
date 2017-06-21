@@ -268,7 +268,7 @@ func mainLoop(c *cli.Context) error {
 	ttySockPath := c.String("tty")
 
 	if ctlSockPath == "" || ttySockPath == "" {
-		return fmt.Errorf("Missing socket path. Please provide CTL and TTY socket paths.")
+		return fmt.Errorf("Missing socket path: please provide CTL and TTY socket paths")
 	}
 
 	h := hyperstart.NewHyperstart(ctlSockPath, ttySockPath, unixSocketType)
