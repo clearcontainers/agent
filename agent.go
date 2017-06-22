@@ -529,23 +529,69 @@ func (p *pod) sendSeq(seq uint64, data []byte) error {
 }
 
 func (p *pod) closeProcessStreams(cid, pid string) {
-	if err := p.containers[cid].processes[pid].stderr.Close(); err != nil {
-		agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
+	if p.containers[cid].processes[pid].termMaster != nil {
+		if err := p.containers[cid].processes[pid].termMaster.Close(); err != nil {
+			agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
+		}
+
+		p.containers[cid].processes[pid].termMaster = nil
 	}
 
-	if err := p.containers[cid].processes[pid].stdout.Close(); err != nil {
-		agentLog.Warnf("Could not close stdout for container %s, process %s: %v", cid, pid, err)
+	if p.containers[cid].processes[pid].stdout != nil {
+		if err := p.containers[cid].processes[pid].stdout.Close(); err != nil {
+			agentLog.Warnf("Could not close stdout for container %s, process %s: %v", cid, pid, err)
+		}
+
+		p.containers[cid].processes[pid].stdout = nil
 	}
 
-	if err := p.containers[cid].processes[pid].stdin.Close(); err != nil {
-		agentLog.Warnf("Could not close stdin for container %s, process %s: %v", cid, pid, err)
+	if p.containers[cid].processes[pid].stderr != nil {
+		if err := p.containers[cid].processes[pid].stderr.Close(); err != nil {
+			agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
+		}
+
+		p.containers[cid].processes[pid].stderr = nil
 	}
 
 	p.unregisterStdin(p.containers[cid].processes[pid].seqStdio)
+
+	if p.containers[cid].processes[pid].stdin != nil {
+		if err := p.containers[cid].processes[pid].stdin.Close(); err != nil {
+			agentLog.Warnf("Could not close stdin for container %s, process %s: %v", cid, pid, err)
+		}
+
+		p.containers[cid].processes[pid].stdin = nil
+	}
+}
+
+func (p *pod) closeProcessPipes(cid, pid string) {
+	if p.containers[cid].processes[pid].process.Stdout != nil {
+		if err := p.containers[cid].processes[pid].process.Stdout.(*os.File).Close(); err != nil {
+			agentLog.Warnf("Could not close process.Stdout for container %s, process %s: %v", cid, pid, err)
+		}
+
+		p.containers[cid].processes[pid].process.Stdout = nil
+	}
+
+	if p.containers[cid].processes[pid].process.Stderr != nil {
+		if err := p.containers[cid].processes[pid].process.Stderr.(*os.File).Close(); err != nil {
+			agentLog.Warnf("Could not close process.Stderr for container %s, process %s: %v", cid, pid, err)
+		}
+
+		p.containers[cid].processes[pid].process.Stderr = nil
+	}
+
+	if p.containers[cid].processes[pid].process.Stdin != nil {
+		if err := p.containers[cid].processes[pid].process.Stdin.(*os.File).Close(); err != nil {
+			agentLog.Warnf("Could not close process.Stdin for container %s, process %s: %v", cid, pid, err)
+		}
+
+		p.containers[cid].processes[pid].process.Stdin = nil
+	}
 }
 
 // Executed as a go routine to route stdout and stderr to the TTY channel.
-func (p *pod) routeOutput(seq uint64, stream *os.File) {
+func (p *pod) routeOutput(seq uint64, stream *os.File, wg *sync.WaitGroup) {
 	for {
 		buf := make([]byte, 1024)
 
@@ -558,6 +604,8 @@ func (p *pod) routeOutput(seq uint64, stream *os.File) {
 		agentLog.Infof("Read from stream seq %d: %q", seq, string(buf[:n]))
 		p.sendSeq(seq, buf[:n])
 	}
+
+	wg.Done()
 }
 
 func setConsoleCarriageReturn(fd uintptr) error {
@@ -580,6 +628,9 @@ func setConsoleCarriageReturn(fd uintptr) error {
 func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan error) error {
 	defer delete(p.containers[cid].processes, pid)
 	defer p.closeProcessStreams(cid, pid)
+	defer p.closeProcessPipes(cid, pid)
+
+	var wgRouteOutput sync.WaitGroup
 
 	if err := p.containers[cid].container.Run(&(p.containers[cid].processes[pid].process)); err != nil {
 		agentLog.Errorf("Could not run process %s: %v", pid, err)
@@ -603,14 +654,19 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 			return err
 		}
 
-		go p.routeOutput(p.containers[cid].processes[pid].seqStdio, termMaster)
+		wgRouteOutput.Add(1)
+		go p.routeOutput(p.containers[cid].processes[pid].seqStdio, termMaster, &wgRouteOutput)
 	} else {
 		if p.containers[cid].processes[pid].stdout != nil {
-			go p.routeOutput(p.containers[cid].processes[pid].seqStdio, p.containers[cid].processes[pid].stdout)
+			wgRouteOutput.Add(1)
+			go p.routeOutput(p.containers[cid].processes[pid].seqStdio,
+				p.containers[cid].processes[pid].stdout, &wgRouteOutput)
 		}
 
 		if p.containers[cid].processes[pid].stderr != nil {
-			go p.routeOutput(p.containers[cid].processes[pid].seqStderr, p.containers[cid].processes[pid].stderr)
+			wgRouteOutput.Add(1)
+			go p.routeOutput(p.containers[cid].processes[pid].seqStderr,
+				p.containers[cid].processes[pid].stderr, &wgRouteOutput)
 		}
 	}
 
@@ -620,6 +676,12 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	if err != nil {
 		agentLog.Infof("Wait for process %s failed: %v", pid, err)
 	}
+
+	// Close pipes to terminate routeOutput() go routines.
+	p.closeProcessPipes(cid, pid)
+
+	// Wait for routeOutput() go routines.
+	wgRouteOutput.Wait()
 
 	// Send empty message on tty channel to close the IO stream
 	p.sendSeq(p.containers[cid].processes[pid].seqStdio, []byte{})
