@@ -128,7 +128,7 @@ type pod struct {
 	stdinList  map[uint64]*os.File
 	network    hyper.Network
 	stdinLock  sync.Mutex
-	stdoutLock sync.Mutex
+	ttyLock    sync.Mutex
 }
 
 type cmdCb func(*pod, []byte) error
@@ -499,8 +499,8 @@ func (p *pod) sendCmd(cmd hyper.HyperCmd, data []byte) error {
 }
 
 func (p *pod) sendSeq(seq uint64, data []byte) error {
-	p.stdoutLock.Lock()
-	defer p.stdoutLock.Unlock()
+	p.ttyLock.Lock()
+	defer p.ttyLock.Unlock()
 
 	dataLen := len(data)
 	length := ttyHeaderSize + dataLen
@@ -548,6 +548,7 @@ func (p *pod) closeProcessStreams(cid, pid string) {
 func (p *pod) routeOutput(seq uint64, stream *os.File) {
 	for {
 		buf := make([]byte, 1024)
+
 		n, err := stream.Read(buf)
 		if err != nil {
 			agentLog.Infof("Stream %d has been closed: %v", seq, err)
