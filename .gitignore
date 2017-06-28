@@ -1,3 +1,4 @@
 *.patch
-agent
+cc-agent
+clear-containers.service
 /hack/agent-cli/agent-cli
