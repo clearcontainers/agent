@@ -21,7 +21,7 @@ import (
 	"os/exec"
 )
 
-const cpBinaryName = "cp --preserve=all"
+const cpBinaryName = "cp"
 
 func fileCopy(srcPath, dstPath string) error {
 	if srcPath == "" {
@@ -37,7 +37,7 @@ func fileCopy(srcPath, dstPath string) error {
 		return err
 	}
 
-	cmd := exec.Command(binPath, srcPath, dstPath)
+	cmd := exec.Command(binPath, "--preserve=all", srcPath, dstPath)
 
 	return cmd.Run()
 }
