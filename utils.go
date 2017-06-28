@@ -21,7 +21,7 @@ import (
 	"os/exec"
 )
 
-const cpBinaryName = "cp"
+const cpBinaryName = "cp --preserve=all"
 
 func fileCopy(srcPath, dstPath string) error {
 	if srcPath == "" {
