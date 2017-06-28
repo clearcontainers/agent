@@ -24,35 +24,27 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-func findLinkFromHwAddr(hwAddr string) (netlink.Link, error) {
-	ifaces, err := net.Interfaces()
+func findLinkFromHwAddr(netHandle *netlink.Handle, hwAddr string) (netlink.Link, error) {
+	links, err := netHandle.LinkList()
 	if err != nil {
 		return nil, err
 	}
 
-	// Index starts at 0, that's why we can initialize it at -1
-	// to identify a case where we didn't find the interface.
-	index := -1
-	for _, iface := range ifaces {
-		if iface.HardwareAddr.String() == hwAddr {
-			index = iface.Index
-			break
+	for _, link := range links {
+		lAttrs := link.Attrs()
+		if lAttrs == nil {
+			continue
+		}
+
+		if lAttrs.HardwareAddr.String() == hwAddr {
+			return link, nil
 		}
 	}
 
-	if index == -1 {
-		return nil, fmt.Errorf("Could not find the link corresponding to HwAddr %q", hwAddr)
-	}
-
-	link, err := netlink.LinkByIndex(index)
-	if err != nil {
-		return nil, err
-	}
-
-	return link, nil
+	return nil, fmt.Errorf("Could not find the link corresponding to HwAddr %q", hwAddr)
 }
 
-func setupInterfaces(ifaces []hyper.NetIface) error {
+func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 	for _, iface := range ifaces {
 		var link netlink.Link
 		if iface.HwAddr != "" {
@@ -60,7 +52,7 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 
 			// Find the interface link from its hardware address
 			var err error
-			link, err = findLinkFromHwAddr(iface.HwAddr)
+			link, err = findLinkFromHwAddr(netHandle, iface.HwAddr)
 			if err != nil {
 				return err
 			}
@@ -68,7 +60,7 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 			agentLog.Infof("Link found %+v", link)
 
 			// Rename it
-			if err := netlink.LinkSetName(link, iface.Name); err != nil {
+			if err := netHandle.LinkSetName(link, iface.Name); err != nil {
 				return err
 			}
 		} else {
@@ -76,7 +68,7 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 
 			// Find the interface link from its name
 			var err error
-			link, err = netlink.LinkByName(iface.Name)
+			link, err = netHandle.LinkByName(iface.Name)
 			if err != nil {
 				return err
 			}
@@ -88,13 +80,13 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 			if err != nil {
 				return fmt.Errorf("Could not parse the IP address %s: %v", ipAddress.IPAddr, err)
 			}
-			if err := netlink.AddrAdd(link, addr); err != nil {
+			if err := netHandle.AddrAdd(link, addr); err != nil {
 				return err
 			}
 		}
 
 		// Set the link up
-		if err := netlink.LinkSetUp(link); err != nil {
+		if err := netHandle.LinkSetUp(link); err != nil {
 			return err
 		}
 	}
@@ -102,7 +94,7 @@ func setupInterfaces(ifaces []hyper.NetIface) error {
 	return nil
 }
 
-func setupRoutes(routes []hyper.Route) error {
+func setupRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
 	for _, route := range routes {
 		var dst *net.IPNet
 		var err error
@@ -115,7 +107,7 @@ func setupRoutes(routes []hyper.Route) error {
 		}
 
 		// Find link index from route's device name
-		link, err := netlink.LinkByName(route.Device)
+		link, err := netHandle.LinkByName(route.Device)
 		if err != nil {
 			return fmt.Errorf("Could not find link from device name %s: %v", route.Device, err)
 		}
@@ -132,7 +124,7 @@ func setupRoutes(routes []hyper.Route) error {
 			Gw:        net.ParseIP(route.Gateway),
 		}
 
-		if err := netlink.RouteReplace(netRoute); err != nil {
+		if err := netHandle.RouteReplace(netRoute); err != nil {
 			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %v", route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 	}
@@ -140,36 +132,42 @@ func setupRoutes(routes []hyper.Route) error {
 	return nil
 }
 
-func setupDNS(dns []string) error {
+func setupDNS(netHandle *netlink.Handle, dns []string) error {
 	return nil
 }
 
 func (p *pod) setupNetwork() error {
-	if err := setupInterfaces(p.network.Interfaces); err != nil {
+	netHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer netHandle.Delete()
+
+	if err := setupInterfaces(netHandle, p.network.Interfaces); err != nil {
 		return fmt.Errorf("Could not setup network interfaces: %v", err)
 	}
 
-	if err := setupRoutes(p.network.Routes); err != nil {
+	if err := setupRoutes(netHandle, p.network.Routes); err != nil {
 		return fmt.Errorf("Could not setup network routes: %v", err)
 	}
 
-	if err := setupDNS(p.network.DNS); err != nil {
+	if err := setupDNS(netHandle, p.network.DNS); err != nil {
 		return fmt.Errorf("Could not setup network DNS: %v", err)
 	}
 
 	return nil
 }
 
-func removeInterfaces(ifaces []hyper.NetIface) error {
+func removeInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 	for _, iface := range ifaces {
 		// Find the interface by name
-		link, err := netlink.LinkByName(iface.Name)
+		link, err := netHandle.LinkByName(iface.Name)
 		if err != nil {
 			return err
 		}
 
 		// Set the link down
-		if err := netlink.LinkSetDown(link); err != nil {
+		if err := netHandle.LinkSetDown(link); err != nil {
 			return err
 		}
 
@@ -179,7 +177,7 @@ func removeInterfaces(ifaces []hyper.NetIface) error {
 			if err != nil {
 				return fmt.Errorf("Could not parse the IP address %s: %v", ipAddress.IPAddr, err)
 			}
-			if err := netlink.AddrDel(link, addr); err != nil {
+			if err := netHandle.AddrDel(link, addr); err != nil {
 				return err
 			}
 		}
@@ -188,7 +186,7 @@ func removeInterfaces(ifaces []hyper.NetIface) error {
 	return nil
 }
 
-func removeRoutes(routes []hyper.Route) error {
+func removeRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
 	for _, route := range routes {
 		_, dst, err := net.ParseCIDR(route.Dest)
 		if err != nil {
@@ -201,7 +199,7 @@ func removeRoutes(routes []hyper.Route) error {
 			Gw:  net.ParseIP(route.Gateway),
 		}
 
-		if err := netlink.RouteDel(netRoute); err != nil {
+		if err := netHandle.RouteDel(netRoute); err != nil {
 			return fmt.Errorf("Could not remove route dest(%s)/src(%s)/gw(%s)/dev(%s): %v", route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 	}
@@ -209,20 +207,26 @@ func removeRoutes(routes []hyper.Route) error {
 	return nil
 }
 
-func removeDNS(dns []string) error {
+func removeDNS(netHandle *netlink.Handle, dns []string) error {
 	return nil
 }
 
 func (p *pod) removeNetwork() error {
-	if err := removeInterfaces(p.network.Interfaces); err != nil {
+	netHandle, err := netlink.NewHandle()
+	if err != nil {
+		return err
+	}
+	defer netHandle.Delete()
+
+	if err := removeInterfaces(netHandle, p.network.Interfaces); err != nil {
 		return fmt.Errorf("Could not remove network interfaces: %v", err)
 	}
 
-	if err := removeRoutes(p.network.Routes); err != nil {
+	if err := removeRoutes(netHandle, p.network.Routes); err != nil {
 		return fmt.Errorf("Could not remove network routes: %v", err)
 	}
 
-	if err := removeDNS(p.network.DNS); err != nil {
+	if err := removeDNS(netHandle, p.network.DNS); err != nil {
 		return fmt.Errorf("Could not remove network DNS: %v", err)
 	}
 
