@@ -1,0 +1,10 @@
+[Unit]
+Description=Clear Containers Agent
+Documentation=https://github.com/clearcontainers/agent
+
+[Service]
+ExecStart=@bindir@/@ccagent@
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
