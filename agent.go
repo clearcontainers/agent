@@ -120,15 +120,16 @@ type container struct {
 }
 
 type pod struct {
-	id         string
-	running    bool
-	containers map[string]*container
-	ctl        *os.File
-	tty        *os.File
-	stdinList  map[uint64]*os.File
-	network    hyper.Network
-	stdinLock  sync.Mutex
-	ttyLock    sync.Mutex
+	id           string
+	running      bool
+	containers   map[string]*container
+	ctl          *os.File
+	tty          *os.File
+	stdinList    map[uint64]*os.File
+	network      hyper.Network
+	stdinLock    sync.Mutex
+	ttyLock      sync.Mutex
+	destroyPodCh chan bool
 }
 
 type cmdCb func(*pod, []byte) error
@@ -167,9 +168,10 @@ func main() {
 
 	// Initialize unique pod structure
 	pod := &pod{
-		containers: make(map[string]*container),
-		running:    false,
-		stdinList:  make(map[uint64]*os.File),
+		containers:   make(map[string]*container),
+		running:      false,
+		stdinList:    make(map[uint64]*os.File),
+		destroyPodCh: make(chan bool),
 	}
 
 	// Open serial ports and write on both CTL and TTY channels
@@ -196,6 +198,7 @@ func main() {
 
 func (p *pod) controlLoop(wg *sync.WaitGroup) {
 	// Send READY right after it has connected.
+	// This allows to block until the connection is up.
 	if err := p.sendCmd(hyper.ReadyCmd, []byte{}); err != nil {
 		agentLog.Errorf("Could not send 'ready' command: %v", err)
 		goto out
@@ -206,8 +209,12 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 		cmd, data, err := p.readCtl()
 		if err != nil {
 			if err == io.EOF {
-				time.Sleep(time.Millisecond)
-				continue
+				select {
+				case <-p.destroyPodCh:
+					break
+				case <-time.After(time.Millisecond):
+					continue
+				}
 			}
 
 			agentLog.Infof("Read on ctl channel failed: %v", err)
@@ -237,8 +244,12 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 		seq, data, err := p.readTty()
 		if err != nil {
 			if err == io.EOF {
-				time.Sleep(time.Millisecond)
-				continue
+				select {
+				case <-p.destroyPodCh:
+					break
+				case <-time.After(time.Millisecond):
+					continue
+				}
 			}
 
 			agentLog.Infof("Read on tty channel failed: %v", err)
@@ -813,8 +824,12 @@ func destroyPodCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Pod not started, impossible to destroy")
 	}
 
-	if len(pod.containers) > 0 {
-		return fmt.Errorf("%d containers not removed, impossible to destroy the pod", len(pod.containers))
+	for key, c := range pod.containers {
+		if err := c.removeContainer(key); err != nil {
+			return err
+		}
+
+		delete(pod.containers, key)
 	}
 
 	if err := unmountShareDir(); err != nil {
@@ -830,6 +845,8 @@ func destroyPodCb(pod *pod, data []byte) error {
 	pod.running = false
 	pod.stdinList = make(map[uint64]*os.File)
 	pod.network = hyper.Network{}
+
+	close(pod.destroyPodCh)
 
 	return nil
 }
@@ -996,6 +1013,14 @@ func killContainerCb(pod *pod, data []byte) error {
 	return nil
 }
 
+func (c *container) removeContainer(id string) error {
+	if err := c.container.Destroy(); err != nil {
+		return err
+	}
+
+	return unmountContainerRootFs(id, c.config.Rootfs)
+}
+
 func removeContainerCb(pod *pod, data []byte) error {
 	var payload hyper.RemoveContainer
 
@@ -1020,11 +1045,7 @@ func removeContainerCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Container %s running, impossible to remove", payload.ID)
 	}
 
-	if err := pod.containers[payload.ID].container.Destroy(); err != nil {
-		return err
-	}
-
-	if err := unmountContainerRootFs(payload.ID, pod.containers[payload.ID].config.Rootfs); err != nil {
+	if err := pod.containers[payload.ID].removeContainer(payload.ID); err != nil {
 		return err
 	}
 
