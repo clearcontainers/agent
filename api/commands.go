@@ -75,7 +75,7 @@ type IPAddress struct {
 type NetIface struct {
 	Name        string      `json:"newDeviceName"`
 	IPAddresses []IPAddress `json:"ipAddresses"`
-	MTU         string      `json:"mtu"`
+	MTU         int         `json:"mtu"`
 	HwAddr      string      `json:"macAddr"`
 }
 
