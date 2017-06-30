@@ -851,6 +851,25 @@ func destroyPodCb(pod *pod, data []byte) error {
 	return nil
 }
 
+func addMounts(config *configs.Config, fsmaps []hyper.Fsmap) error {
+	for _, fsmap := range fsmaps {
+		newMount := &configs.Mount{
+			Source:      filepath.Join(mountShareDirDest, fsmap.Source),
+			Destination: fsmap.Path,
+			Device:      "bind",
+			Flags:       syscall.MS_BIND | syscall.MS_REC,
+		}
+
+		if fsmap.ReadOnly {
+			newMount.Flags |= syscall.MS_RDONLY
+		}
+
+		config.Mounts = append(config.Mounts, newMount)
+	}
+
+	return nil
+}
+
 func newContainerCb(pod *pod, data []byte) error {
 	var payload hyper.NewContainer
 
@@ -947,6 +966,12 @@ func newContainerCb(pod *pod, data []byte) error {
 		},
 
 		NoNewKeyring: true,
+	}
+
+	// Populate config.Mounts with additional mounts provided through
+	// fsmap.
+	if err := addMounts(&config, payload.Fsmap); err != nil {
+		return err
 	}
 
 	containerPath := filepath.Join("/tmp/libcontainer", pod.id)

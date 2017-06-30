@@ -101,6 +101,14 @@ type EnvironmentVar struct {
 	Value string `json:"value"`
 }
 
+// Fsmap describes a filesystem map related to a container.
+type Fsmap struct {
+	Source       string `json:"source"`
+	Path         string `json:"path"`
+	ReadOnly     bool   `json:"readOnly"`
+	DockerVolume bool   `json:"dockerVolume"`
+}
+
 // Process describes a process running on a container.
 type Process struct {
 	ID               string           `json:"id"`
@@ -141,6 +149,7 @@ type NewContainer struct {
 	ID      string  `json:"id"`
 	RootFs  string  `json:"rootfs"`
 	Image   string  `json:"image"`
+	Fsmap   []Fsmap `json:"fsmap"`
 	Process Process `json:"process"`
 }
 
