@@ -44,6 +44,45 @@ func findLinkFromHwAddr(netHandle *netlink.Handle, hwAddr string) (netlink.Link,
 	return nil, fmt.Errorf("Could not find the link corresponding to HwAddr %q", hwAddr)
 }
 
+func setupInterface(netHandle *netlink.Handle, iface hyper.NetIface, link netlink.Link) error {
+	lAttrs := link.Attrs()
+	if lAttrs != nil && (lAttrs.Flags&net.FlagUp) == net.FlagUp {
+		// The link is up, makes sure we get it down before
+		// doing any modification.
+		if err := netHandle.LinkSetDown(link); err != nil {
+			return err
+		}
+	}
+
+	// Rename the link
+	if iface.Name != "" {
+		if err := netHandle.LinkSetName(link, iface.Name); err != nil {
+			return err
+		}
+	}
+
+	// Set MTU
+	if iface.MTU > 0 {
+		if err := netHandle.LinkSetMTU(link, iface.MTU); err != nil {
+			return err
+		}
+	}
+
+	for _, ipAddress := range iface.IPAddresses {
+		// Add an IP address
+		addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%s", ipAddress.IPAddr, ipAddress.NetMask))
+		if err != nil {
+			return fmt.Errorf("Could not parse the IP address %s: %v", ipAddress.IPAddr, err)
+		}
+		if err := netHandle.AddrAdd(link, addr); err != nil {
+			return err
+		}
+	}
+
+	// Set the link up
+	return netHandle.LinkSetUp(link)
+}
+
 func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 	for _, iface := range ifaces {
 		var link netlink.Link
@@ -56,14 +95,7 @@ func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 			if err != nil {
 				return err
 			}
-
-			agentLog.Infof("Link found %+v", link)
-
-			// Rename it
-			if err := netHandle.LinkSetName(link, iface.Name); err != nil {
-				return err
-			}
-		} else {
+		} else if iface.Name != "" {
 			agentLog.Infof("Get the interface from its name %s", iface.Name)
 
 			// Find the interface link from its name
@@ -72,21 +104,13 @@ func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 			if err != nil {
 				return err
 			}
+		} else {
+			return fmt.Errorf("Interface HwAddr and Name are both empty")
 		}
 
-		for _, ipAddress := range iface.IPAddresses {
-			// Add an IP address
-			addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%s", ipAddress.IPAddr, ipAddress.NetMask))
-			if err != nil {
-				return fmt.Errorf("Could not parse the IP address %s: %v", ipAddress.IPAddr, err)
-			}
-			if err := netHandle.AddrAdd(link, addr); err != nil {
-				return err
-			}
-		}
+		agentLog.Infof("Link found %+v", link)
 
-		// Set the link up
-		if err := netHandle.LinkSetUp(link); err != nil {
+		if err := setupInterface(netHandle, iface, link); err != nil {
 			return err
 		}
 	}
