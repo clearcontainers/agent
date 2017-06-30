@@ -236,8 +236,26 @@ func removeInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error 
 		}
 
 		for _, ipAddress := range iface.IPAddresses {
+			netMask := ipAddress.NetMask
+
+			// Determine the network mask if not provided in the expected format
+			netMaskIP := net.ParseIP(netMask)
+			if netMaskIP != nil {
+				ip := net.ParseIP(ipAddress.IPAddr)
+				if ip == nil {
+					return fmt.Errorf("Invalid IP address %q", ipAddress.IPAddr)
+				}
+
+				tmpNetMask, err := getStrNetMaskFromIPv4(ip)
+				if err != nil {
+					return err
+				}
+
+				netMask = tmpNetMask
+			}
+
 			// Remove the IP address
-			addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%s", ipAddress.IPAddr, ipAddress.NetMask))
+			addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%s", ipAddress.IPAddr, netMask))
 			if err != nil {
 				return fmt.Errorf("Could not parse the IP address %s: %v", ipAddress.IPAddr, err)
 			}
@@ -252,9 +270,25 @@ func removeInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error 
 
 func removeRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
 	for _, route := range routes {
-		_, dst, err := net.ParseCIDR(route.Dest)
-		if err != nil {
-			return fmt.Errorf("Could not parse route destination %s: %v", route.Dest, err)
+		var dst *net.IPNet
+		var err error
+
+		if route.Dest != "" && route.Dest != "default" {
+			destIP := net.ParseIP(route.Dest)
+			if destIP != nil {
+				// Add the missing network mask
+				netMask, err := getStrNetMaskFromIPv4(destIP)
+				if err != nil {
+					return err
+				}
+
+				route.Dest += "/" + netMask
+			}
+
+			_, dst, err = net.ParseCIDR(route.Dest)
+			if err != nil {
+				return fmt.Errorf("Could not parse route destination %s: %v", route.Dest, err)
+			}
 		}
 
 		netRoute := &netlink.Route{
@@ -282,16 +316,16 @@ func (p *pod) removeNetwork() error {
 	}
 	defer netHandle.Delete()
 
-	if err := removeInterfaces(netHandle, p.network.Interfaces); err != nil {
-		return fmt.Errorf("Could not remove network interfaces: %v", err)
+	if err := removeDNS(netHandle, p.network.DNS); err != nil {
+		return fmt.Errorf("Could not remove network DNS: %v", err)
 	}
 
 	if err := removeRoutes(netHandle, p.network.Routes); err != nil {
 		return fmt.Errorf("Could not remove network routes: %v", err)
 	}
 
-	if err := removeDNS(netHandle, p.network.DNS); err != nil {
-		return fmt.Errorf("Could not remove network DNS: %v", err)
+	if err := removeInterfaces(netHandle, p.network.Interfaces); err != nil {
+		return fmt.Errorf("Could not remove network interfaces: %v", err)
 	}
 
 	return nil
