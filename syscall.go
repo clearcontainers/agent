@@ -105,7 +105,7 @@ func mountContainerRootFs(containerID, image, rootFs string) (string, error) {
 		return "", err
 	}
 
-	source := filepath.Join(mountShareDirDest, containerID)
+	source := filepath.Join(mountShareDirDest, image)
 	if err := bindMount(source, dest, false); err != nil {
 		return "", err
 	}
