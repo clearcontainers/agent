@@ -129,7 +129,6 @@ type pod struct {
 	network      hyper.Network
 	stdinLock    sync.Mutex
 	ttyLock      sync.Mutex
-	destroyPodCh chan bool
 }
 
 type cmdCb func(*pod, []byte) error
@@ -164,14 +163,12 @@ func main() {
 	// Initialiaze wait group waiting for loops to be terminated
 	var wgLoops sync.WaitGroup
 	wgLoops.Add(1)
-	wgLoops.Add(1)
 
 	// Initialize unique pod structure
 	pod := &pod{
 		containers:   make(map[string]*container),
 		running:      false,
 		stdinList:    make(map[uint64]*os.File),
-		destroyPodCh: make(chan bool),
 	}
 
 	// Open serial ports and write on both CTL and TTY channels
@@ -209,12 +206,8 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 		cmd, data, err := p.readCtl()
 		if err != nil {
 			if err == io.EOF {
-				select {
-				case <-p.destroyPodCh:
-					break
-				case <-time.After(time.Millisecond):
-					continue
-				}
+				time.Sleep(time.Millisecond)
+				continue
 			}
 
 			agentLog.Infof("Read on ctl channel failed: %v", err)
@@ -232,6 +225,10 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 			agentLog.Errorf("Send reply on ctl channel failed: %v", err)
 			break
 		}
+
+		if cmd == hyper.DestroyPodCmd {
+			break
+		}
 	}
 
 out:
@@ -244,12 +241,8 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 		seq, data, err := p.readTty()
 		if err != nil {
 			if err == io.EOF {
-				select {
-				case <-p.destroyPodCh:
-					break
-				case <-time.After(time.Millisecond):
-					continue
-				}
+				time.Sleep(time.Millisecond)
+				continue
 			}
 
 			agentLog.Infof("Read on tty channel failed: %v", err)
@@ -821,7 +814,8 @@ func startPodCb(pod *pod, data []byte) error {
 
 func destroyPodCb(pod *pod, data []byte) error {
 	if pod.running == false {
-		return fmt.Errorf("Pod not started, impossible to destroy")
+		agentLog.Infof("Pod not started, this is a no-op")
+		return nil
 	}
 
 	for key, c := range pod.containers {
@@ -832,12 +826,12 @@ func destroyPodCb(pod *pod, data []byte) error {
 		delete(pod.containers, key)
 	}
 
-	if err := unmountShareDir(); err != nil {
-		return err
-	}
-
 	if err := pod.removeNetwork(); err != nil {
 		return fmt.Errorf("Could not remove the network: %v", err)
+	}
+
+	if err := unmountShareDir(); err != nil {
+		return err
 	}
 
 	pod.id = ""
@@ -845,8 +839,6 @@ func destroyPodCb(pod *pod, data []byte) error {
 	pod.running = false
 	pod.stdinList = make(map[uint64]*os.File)
 	pod.network = hyper.Network{}
-
-	close(pod.destroyPodCh)
 
 	return nil
 }
