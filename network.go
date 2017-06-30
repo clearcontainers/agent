@@ -44,6 +44,17 @@ func findLinkFromHwAddr(netHandle *netlink.Handle, hwAddr string) (netlink.Link,
 	return nil, fmt.Errorf("Could not find the link corresponding to HwAddr %q", hwAddr)
 }
 
+func getStrNetMaskFromIPv4(ip net.IP) (string, error) {
+	ipMask := ip.DefaultMask()
+	if ipMask == nil {
+		return "", fmt.Errorf("Could not deduce IP network mask from %v", ip)
+	}
+
+	ipMaskInt, _ := ipMask.Size()
+
+	return fmt.Sprintf("%d", ipMaskInt), nil
+}
+
 func setupInterface(netHandle *netlink.Handle, iface hyper.NetIface, link netlink.Link) error {
 	lAttrs := link.Attrs()
 	if lAttrs != nil && (lAttrs.Flags&net.FlagUp) == net.FlagUp {
@@ -69,8 +80,26 @@ func setupInterface(netHandle *netlink.Handle, iface hyper.NetIface, link netlin
 	}
 
 	for _, ipAddress := range iface.IPAddresses {
+		netMask := ipAddress.NetMask
+
+		// Determine the network mask if not provided in the expected format
+		netMaskIP := net.ParseIP(netMask)
+		if netMaskIP != nil {
+			ip := net.ParseIP(ipAddress.IPAddr)
+			if ip == nil {
+				return fmt.Errorf("Invalid IP address %q", ipAddress.IPAddr)
+			}
+
+			tmpNetMask, err := getStrNetMaskFromIPv4(ip)
+			if err != nil {
+				return err
+			}
+
+			netMask = tmpNetMask
+		}
+
 		// Add an IP address
-		addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%s", ipAddress.IPAddr, ipAddress.NetMask))
+		addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%s", ipAddress.IPAddr, netMask))
 		if err != nil {
 			return fmt.Errorf("Could not parse the IP address %s: %v", ipAddress.IPAddr, err)
 		}
@@ -124,6 +153,17 @@ func setupRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
 		var err error
 
 		if route.Dest != "" && route.Dest != "default" {
+			destIP := net.ParseIP(route.Dest)
+			if destIP != nil {
+				// Add the missing network mask
+				netMask, err := getStrNetMaskFromIPv4(destIP)
+				if err != nil {
+					return err
+				}
+
+				route.Dest += "/" + netMask
+			}
+
 			_, dst, err = net.ParseCIDR(route.Dest)
 			if err != nil {
 				return fmt.Errorf("Could not parse route destination %s: %v", route.Dest, err)
