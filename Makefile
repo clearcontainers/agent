@@ -24,10 +24,12 @@ $(TARGET): $(SOURCES) Makefile $(GENERATED_FILES)
 install:
 	install -D $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
 ifeq ($(HAVE_SYSTEMD),yes)
+	@echo "Installing systemd unit files..."
 	$(foreach f,$(UNIT_FILES),$(call INSTALL_FILE,$f,$(UNIT_DIR)))
 endif
 
 $(GENERATED_FILES): %: %.in Makefile
+	@echo "Generating file: $@"
 	@mkdir -p `dirname $@`
 	$(QUIET_GEN)sed \
 		-e 's|[@]bindir[@]|$(BINDIR)|g' \
