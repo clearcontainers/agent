@@ -149,6 +149,7 @@ type NewContainer struct {
 	ID      string  `json:"id"`
 	RootFs  string  `json:"rootfs"`
 	Image   string  `json:"image"`
+	FsType  string  `json:"fstype,omitempty"`
 	Fsmap   []Fsmap `json:"fsmap"`
 	Process Process `json:"process"`
 }

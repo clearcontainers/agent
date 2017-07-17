@@ -24,28 +24,40 @@ import (
 )
 
 const mountPerm = os.FileMode(0755)
+const devPath = "/dev"
 
-// bindMount bind mounts a source in to a destination. This will
-// do some bookkeeping:
+// bindMount bind mounts a source in to a destination, with the recursive
+// flag if needed.
+func bindMount(source, destination string, recursive bool) error {
+	flags := syscall.MS_BIND
+
+	if recursive == true {
+		flags |= syscall.MS_REC
+	}
+
+	return mount(source, destination, "bind", flags)
+}
+
+// mount mounts a source in to a destination. This will do some bookkeeping:
 // * evaluate all symlinks
 // * ensure the source exists
-// * recursively create the destination
-func bindMount(source, destination string, recursive bool) error {
-	mountFlag := syscall.MS_BIND
+func mount(source, destination, fsType string, flags int) error {
+	var options string
+	if fsType == "xfs" {
+		options = "nouuid"
+	}
 
 	absSource, err := filepath.EvalSymlinks(source)
 	if err != nil {
 		return fmt.Errorf("Could not resolve symlink for source %v", source)
 	}
 
-	if recursive == true {
-		mountFlag |= syscall.MS_REC
+	if err := ensureDestinationExists(absSource, destination, fsType); err != nil {
+		return fmt.Errorf("Could not create destination mount point: %v: %v", destination, err)
 	}
 
-	if err := ensureDestinationExists(absSource, destination); err != nil {
-		return fmt.Errorf("Could not create destination mount point: %v", destination)
-	} else if err := syscall.Mount(absSource, destination, "bind", uintptr(mountFlag), ""); err != nil {
-		return fmt.Errorf("Could not bind mount %v to %v", absSource, destination)
+	if err := syscall.Mount(absSource, destination, fsType, uintptr(flags), options); err != nil {
+		return fmt.Errorf("Could not bind mount %v to %v: %v", absSource, destination, err)
 	}
 
 	return nil
@@ -53,7 +65,7 @@ func bindMount(source, destination string, recursive bool) error {
 
 // ensureDestinationExists will recursively create a given mountpoint. If directories
 // are created, their permissions are initialized to mountPerm
-func ensureDestinationExists(source, destination string) error {
+func ensureDestinationExists(source, destination string, fsType string) error {
 	fileInfo, err := os.Stat(source)
 	if err != nil {
 		return fmt.Errorf("could not stat source location: %v", source)
@@ -64,7 +76,7 @@ func ensureDestinationExists(source, destination string) error {
 		return fmt.Errorf("could not create parent directory: %v", targetPathParent)
 	}
 
-	if fileInfo.IsDir() {
+	if fsType != "bind" || fileInfo.IsDir() {
 		if err := os.Mkdir(destination, mountPerm); !os.IsExist(err) {
 			return err
 		}
@@ -99,15 +111,23 @@ func unmountShareDir() error {
 	return os.RemoveAll(containerMountDest)
 }
 
-func mountContainerRootFs(containerID, image, rootFs string) (string, error) {
+func mountContainerRootFs(containerID, image, rootFs, fsType string) (string, error) {
 	dest := filepath.Join(containerMountDest, containerID, "root")
 	if err := os.MkdirAll(dest, os.FileMode(0755)); err != nil {
 		return "", err
 	}
 
-	source := filepath.Join(mountShareDirDest, image)
-	if err := bindMount(source, dest, false); err != nil {
-		return "", err
+	var source string
+	if fsType != "" {
+		source = filepath.Join(devPath, image)
+		if err := mount(source, dest, fsType, 0); err != nil {
+			return "", err
+		}
+	} else {
+		source = filepath.Join(mountShareDirDest, image)
+		if err := bindMount(source, dest, false); err != nil {
+			return "", err
+		}
 	}
 
 	mountingPath := filepath.Join(dest, rootFs)
