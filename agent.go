@@ -159,7 +159,11 @@ func init() {
 	}
 }
 
+// Version is the agent version. This variable is populated at build time.
+var Version = "unknown"
+
 func main() {
+	agentLog.Infof("Agent version: %s", Version)
 	// Initialiaze wait group waiting for loops to be terminated
 	var wgLoops sync.WaitGroup
 	wgLoops.Add(1)
