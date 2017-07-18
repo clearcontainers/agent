@@ -2,8 +2,10 @@ reviewers:
 - agent
 
 approvers:
-- sboeuf
-- devimc
 - amshinde
+- devimc
+- dlespiau
+- grahamwhaley
 - mcastelino
 - sameo
+- sboeuf

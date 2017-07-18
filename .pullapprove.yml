@@ -33,11 +33,13 @@ groups:
   approvers:
     required: 1
     users:
-      - sboeuf
-      - devimc
       - amshinde
+      - devimc
+      - dlespiau
+      - grahamwhaley
       - mcastelino
       - sameo
+      - sboeuf
 
   documentation:
     conditions:
