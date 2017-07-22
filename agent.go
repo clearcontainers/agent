@@ -396,6 +396,15 @@ func findVirtualSerialPath(serialName string) (string, error) {
 
 	for _, port := range ports {
 		path := filepath.Join(virtIOPath, port, "name")
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				agentLog.Debugf("Skip parsing of %s as it does not exist", path)
+				continue
+			}
+
+			return "", err
+		}
+
 		content, err := ioutil.ReadFile(path)
 		if err != nil {
 			return "", err
