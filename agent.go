@@ -1036,7 +1036,8 @@ func killContainerCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Container %s not found, impossible to signal", payload.ID)
 	}
 
-	if err := pod.containers[payload.ID].container.Signal(payload.Signal, true); err != nil {
+	// Use AllProcesses to make sure we carry forward the flag passed by the runtime.
+	if err := pod.containers[payload.ID].container.Signal(payload.Signal, payload.AllProcesses); err != nil {
 		return err
 	}
 
