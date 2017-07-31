@@ -22,6 +22,10 @@ set -x
 test_repo="github.com/clearcontainers/tests"
 test_repo_dir="${GOPATH}/src/${test_repo}"
 
+cidir=$(dirname "$0")
+
+bash -c "${cidir}/go-test.sh"
+
 # Execute the tests under `clearcontainers/tests` repository.
 pushd "${test_repo_dir}"
 sudo -E PATH=$PATH bash -c "make check"
