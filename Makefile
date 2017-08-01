@@ -18,10 +18,10 @@ DESCRIBE := $(shell git describe 2> /dev/null || true)
 DESCRIBE_DIRTY := $(if $(shell git status --porcelain --untracked-files=no 2> /dev/null),${DESCRIBE}-dirty,${DESCRIBE})
 GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
 ifneq ($(GIT_COMMIT),)
-VERSION := $(VERSION)-$(GIT_COMMIT)
+VERSION_COMMIT := $(VERSION)-$(GIT_COMMIT)
 endif
 ifneq ($(DESCRIBE_DIRTY),)
-VERSION := $(VERSION)$(DESCRIBE_DIRTY)
+VERSION_COMMIT := $(VERSION)$(DESCRIBE_DIRTY)
 endif
 
 HAVE_SYSTEMD := $(shell pkg-config --exists systemd 2>/dev/null && echo 'yes')
@@ -37,7 +37,7 @@ SED = sed
 
 .DEFAULT: $(TARGET)
 $(TARGET): $(SOURCES) Makefile $(GENERATED_FILES)
-	go build -ldflags "-X main.Version=$(VERSION)" -o $@ .
+	go build -ldflags "-X main.Version=$(VERSION_COMMIT)" -o $@ .
 
 install:
 	install -D $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
@@ -53,6 +53,9 @@ $(GENERATED_FILES): %: %.in Makefile
 		-e 's|[@]bindir[@]|$(BINDIR)|g' \
 		-e 's|[@]ccagent[@]|$(TARGET)|g' \
 		"$<" > "$@"
+dist:
+	git archive --format=tar --prefix=clear-containers-agent-$(VERSION)/ \
+		HEAD | xz -c > clear-containers-agent-$(VERSION).tar.xz
 
 clean:
 	rm -f $(TARGET) $(GENERATED_FILES)
