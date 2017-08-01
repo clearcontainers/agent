@@ -8,6 +8,7 @@
 # A '+' sign should be added in the commit just after tagging a new release.
 VERSION := 0.1.0-alpha.0+
 SOURCES := $(shell find . 2>&1 | grep -E '.*\.(c|h|go)$$')
+MKDIR = $(dir $(lastword $(MAKEFILE_LIST)))
 
 TARGET = cc-agent
 DESTDIR :=
@@ -56,6 +57,10 @@ $(GENERATED_FILES): %: %.in Makefile
 dist:
 	git archive --format=tar --prefix=clear-containers-agent-$(VERSION)/ \
 		HEAD | xz -c > clear-containers-agent-$(VERSION).tar.xz
+
+check:
+	bash -c "$(MKDIR)/.ci/go-lint.sh"
+	bash -c "$(MKDIR)/.ci/go-test.sh"
 
 clean:
 	rm -f $(TARGET) $(GENERATED_FILES)
