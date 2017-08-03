@@ -182,7 +182,7 @@ type Winsize struct {
 // CmdToString translates a command into its corresponding string.
 func CmdToString(cmd HyperCmd) string {
 	strCmd, exist := stringCmdList[cmd]
-	if exist == false {
+	if !exist {
 		return ""
 	}
 

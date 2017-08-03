@@ -31,12 +31,12 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/sirupsen/logrus"
 	hyper "github.com/clearcontainers/agent/api"
 	"github.com/opencontainers/runc/libcontainer"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	_ "github.com/opencontainers/runc/libcontainer/nsenter"
 	"github.com/opencontainers/runc/libcontainer/utils"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -120,15 +120,15 @@ type container struct {
 }
 
 type pod struct {
-	id           string
-	running      bool
-	containers   map[string]*container
-	ctl          *os.File
-	tty          *os.File
-	stdinList    map[uint64]*os.File
-	network      hyper.Network
-	stdinLock    sync.Mutex
-	ttyLock      sync.Mutex
+	id         string
+	running    bool
+	containers map[string]*container
+	ctl        *os.File
+	tty        *os.File
+	stdinList  map[uint64]*os.File
+	network    hyper.Network
+	stdinLock  sync.Mutex
+	ttyLock    sync.Mutex
 }
 
 type cmdCb func(*pod, []byte) error
@@ -170,9 +170,9 @@ func main() {
 
 	// Initialize unique pod structure
 	pod := &pod{
-		containers:   make(map[string]*container),
-		running:      false,
-		stdinList:    make(map[uint64]*os.File),
+		containers: make(map[string]*container),
+		running:    false,
+		stdinList:  make(map[uint64]*os.File),
 	}
 
 	// Open serial ports and write on both CTL and TTY channels
