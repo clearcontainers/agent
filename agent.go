@@ -59,6 +59,10 @@ const (
 	statelessPassword  = "/usr/share/defaults/etc/passwd"
 	defaultGroup       = "/etc/group"
 	statelessGroup     = "/usr/share/defaults/etc/group"
+	kernelCmdlineFile  = "/proc/cmdline"
+	optionPrefix       = "agent."
+	logLevelFlag       = optionPrefix + "log"
+	defaultLogLevel    = logrus.InfoLevel
 )
 
 var capsList = []string{
@@ -100,6 +104,10 @@ var capsList = []string{
 	"CAP_SYS_TTY_CONFIG",
 	"CAP_SYSLOG",
 	"CAP_WAKE_ALARM",
+}
+
+type agentConfig struct {
+	logLevel logrus.Level
 }
 
 type process struct {
@@ -163,6 +171,14 @@ func init() {
 var Version = "unknown"
 
 func main() {
+
+	agentLog.Formatter = &logrus.JSONFormatter{TimestampFormat: time.RFC3339Nano}
+	config := newConfig(defaultLogLevel)
+	if err := config.getConfig(kernelCmdlineFile); err != nil {
+		agentLog.Warnf("Failed to get config from ernel cmdline: %v", err)
+	}
+	applyConfig(config)
+
 	agentLog.Infof("Agent version: %s", Version)
 	// Initialiaze wait group waiting for loops to be terminated
 	var wgLoops sync.WaitGroup
@@ -1209,4 +1225,67 @@ func winsizeCb(pod *pod, data []byte) error {
 	}
 
 	return nil
+}
+
+func newConfig(level logrus.Level) agentConfig {
+	config := agentConfig{}
+	config.logLevel = level
+	return config
+}
+
+//Get the agent configuration from kernel cmdline
+func (c *agentConfig) getConfig(cmdLineFile string) error {
+
+	if cmdLineFile == "" {
+		return fmt.Errorf("Kernel cmdline file cannot be empty")
+	}
+
+	kernelCmdline, err := ioutil.ReadFile(cmdLineFile)
+	if err != nil {
+		return err
+	}
+
+	words := strings.Fields(string(kernelCmdline))
+	for _, w := range words {
+		word := string(w)
+		if err := c.parseCmdlineOption(word); err != nil {
+			agentLog.Warnf("Failed to parse kernel option %s: %v", word, err)
+		}
+	}
+	return nil
+}
+
+func applyConfig(config agentConfig) {
+	agentLog.SetLevel(config.logLevel)
+}
+
+//Parse a string that represents a kernel cmdline option
+func (c *agentConfig) parseCmdlineOption(option string) error {
+
+	const (
+		optionPosition = iota
+		valuePosition
+		optionSeparator = "="
+	)
+
+	split := strings.Split(option, optionSeparator)
+
+	if len(split) < valuePosition+1 {
+		return nil
+	}
+
+	switch split[optionPosition] {
+	case logLevelFlag:
+		level, err := logrus.ParseLevel(split[valuePosition])
+		if err != nil {
+			return err
+		}
+		c.logLevel = level
+	default:
+		if strings.HasPrefix(split[optionPosition], optionPrefix) {
+			return fmt.Errorf("Unknown option %s", split[optionPosition])
+		}
+	}
+	return nil
+
 }
