@@ -161,7 +161,7 @@ func init() {
 		runtime.LockOSThread()
 		factory, _ := libcontainer.New("")
 		if err := factory.StartInitialization(); err != nil {
-			agentLog.Infof("init went wrong: %v", err)
+			agentLog.Errorf("init went wrong: %v", err)
 		}
 		panic("--this line should have never been executed, congratulations--")
 	}
@@ -230,7 +230,7 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 				continue
 			}
 
-			agentLog.Infof("Read on ctl channel failed: %v", err)
+			agentLog.Errorf("Read on ctl channel failed: %v", err)
 			break
 		}
 
@@ -707,7 +707,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	processState, err := p.containers[cid].processes[pid].process.Wait()
 	if err != nil {
-		agentLog.Infof("Wait for process %s failed: %v", pid, err)
+		agentLog.Errorf("Wait for process %s failed: %v", pid, err)
 	}
 
 	// Close pipes to terminate routeOutput() go routines.
