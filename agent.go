@@ -63,6 +63,7 @@ const (
 	optionPrefix       = "agent."
 	logLevelFlag       = optionPrefix + "log"
 	defaultLogLevel    = logrus.InfoLevel
+	cannotGetTimeMsg   = "Failed to get time for event %s:%v"
 )
 
 var capsList = []string{
@@ -180,6 +181,13 @@ func main() {
 	applyConfig(config)
 
 	agentLog.Infof("Agent version: %s", Version)
+
+	if uptime, err := newEventTime(agentStartedEvent); err != nil {
+		agentLog.Errorf("Failed to get uptime %v", err)
+	} else {
+		agentLog.Infof("%s", uptime)
+	}
+
 	// Initialiaze wait group waiting for loops to be terminated
 	var wgLoops sync.WaitGroup
 	wgLoops.Add(1)
@@ -808,7 +816,12 @@ func (p *pod) runCmd(cmd hyper.HyperCmd, data []byte) error {
 		return fmt.Errorf("No callback found for command %q", hyper.CmdToString(cmd))
 	}
 
-	return cb(p, data)
+	agentLog.Infof("%s", hyper.CmdToString(cmd)+"_start")
+
+	cbErr := cb(p, data)
+
+	agentLog.Infof("%s", hyper.CmdToString(cmd)+"_end")
+	return cbErr
 }
 
 func startPodCb(pod *pod, data []byte) error {
