@@ -41,6 +41,9 @@ pushd "${runtime_repo_dir}"
 sed -i 's/cc-agent.target/clear-containers.target/' create.go
 popd
 
+# Install libudev-dev required for go-udev vendor dependency
+sudo apt-get install -y libudev-dev
+
 if [ "$TRAVIS" = true ]
 then
     # Check the commits in the branch
