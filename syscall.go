@@ -21,6 +21,9 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
+
+	goudev "github.com/jochenvg/go-udev"
 )
 
 const mountPerm = os.FileMode(0755)
@@ -111,6 +114,62 @@ func unmountShareDir() error {
 	return os.RemoveAll(containerMountDest)
 }
 
+func waitForBlockDevice(deviceName string) error {
+	devicePath := filepath.Join(devPath, deviceName)
+
+	if _, err := os.Stat(devicePath); err == nil {
+		return nil
+	}
+
+	u := goudev.Udev{}
+
+	// Create a monitor listening on a NetLink socket.
+	monitor := u.NewMonitorFromNetlink("udev")
+
+	// Add filter to watch for just block devices.
+	if err := monitor.FilterAddMatchSubsystemDevtype("block", "disk"); err != nil {
+		return err
+	}
+
+	// Create done signal channel for signalling epoll loop on the monitor socket.
+	done := make(chan struct{})
+
+	// Create channel to signal when desired udev event has been received.
+	doneListening := make(chan bool)
+
+	// Start monitor goroutine.
+	ch, _ := monitor.DeviceChan(done)
+
+	go func() {
+		agentLog.Infof("Started listening for udev events for block device hotplug")
+
+		// Check if the device already exists.
+		if _, err := os.Stat(devicePath); err == nil {
+			agentLog.Infof("Device %s already hotplugged, quit listening", deviceName)
+		} else {
+
+			for d := range ch {
+				agentLog.Infof("Event:", d.Syspath(), d.Action())
+				if d.Action() == "add" && filepath.Base(d.Devpath()) == deviceName {
+					agentLog.Infof("Hotplug event received for device %s", deviceName)
+					break
+				}
+			}
+		}
+		close(doneListening)
+	}()
+
+	select {
+	case <-doneListening:
+		close(done)
+	case <-time.After(time.Duration(1) * time.Second):
+		close(done)
+		return fmt.Errorf("Timed out waiting for device %s", deviceName)
+	}
+
+	return nil
+}
+
 func mountContainerRootFs(containerID, image, rootFs, fsType string) (string, error) {
 	dest := filepath.Join(containerMountDest, containerID, "root")
 	if err := os.MkdirAll(dest, os.FileMode(0755)); err != nil {
@@ -120,6 +179,10 @@ func mountContainerRootFs(containerID, image, rootFs, fsType string) (string, er
 	var source string
 	if fsType != "" {
 		source = filepath.Join(devPath, image)
+		if err := waitForBlockDevice(image); err != nil {
+			return "", err
+		}
+
 		if err := mount(source, dest, fsType, 0); err != nil {
 			return "", err
 		}

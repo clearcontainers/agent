@@ -63,6 +63,18 @@
 
 [[projects]]
   branch = "master"
+  name = "github.com/jkeiser/iter"
+  packages = ["."]
+  revision = "67b94d6149c6b2efe0fde15d36a50a7692c2da17"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/jochenvg/go-udev"
+  packages = ["."]
+  revision = "b7a82d7b755ee9b24b4a4cfd2c0626200903810a"
+
+[[projects]]
+  branch = "master"
   name = "github.com/mrunalp/fileutils"
   packages = ["."]
   revision = "4ee1cc9a80582a0c75febdd5cfa779ee4361cbca"
@@ -136,6 +148,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "832c2031e42f76d3e5e853c7bfcf44f65805e4976a11b2b0b697481585f2e2ff"
+  inputs-digest = "4ec422ab0b9bd144d5c748d861ccdf3ba92e6a7d85aa6c42907eb371ab6b826c"
   solver-name = "gps-cdcl"
   solver-version = 1
