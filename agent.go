@@ -129,15 +129,16 @@ type container struct {
 }
 
 type pod struct {
-	id         string
-	running    bool
-	containers map[string]*container
-	ctl        *os.File
-	tty        *os.File
-	stdinList  map[uint64]*os.File
-	network    hyper.Network
-	stdinLock  sync.Mutex
-	ttyLock    sync.Mutex
+	id             string
+	running        bool
+	containers     map[string]*container
+	ctl            *os.File
+	tty            *os.File
+	stdinList      map[uint64]*os.File
+	network        hyper.Network
+	stdinLock      sync.Mutex
+	ttyLock        sync.Mutex
+	containersLock sync.RWMutex
 }
 
 type cmdCb func(*pod, []byte) error
@@ -219,6 +220,30 @@ func main() {
 	go pod.streamsLoop(&wgLoops)
 
 	wgLoops.Wait()
+}
+
+func (p *pod) getContainer(id string) (ctr *container) {
+	p.containersLock.RLock()
+	defer p.containersLock.RUnlock()
+
+	ctr, exist := p.containers[id]
+	if exist == false {
+		return nil
+	}
+
+	return ctr
+}
+
+func (p *pod) setContainer(id string, ctr *container) {
+	p.containersLock.Lock()
+	p.containers[id] = ctr
+	p.containersLock.Unlock()
+}
+
+func (p *pod) deleteContainer(id string) {
+	p.containersLock.Lock()
+	delete(p.containers, id)
+	p.containersLock.Unlock()
 }
 
 func (p *pod) controlLoop(wg *sync.WaitGroup) {
@@ -667,20 +692,22 @@ func setConsoleCarriageReturn(fd uintptr) error {
 
 // Executed as go routine to run and wait for the process.
 func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan error) error {
-	defer delete(p.containers[cid].processes, pid)
+	ctr := p.getContainer(cid)
+
+	defer delete(ctr.processes, pid)
 	defer p.closeProcessStreams(cid, pid)
 	defer p.closeProcessPipes(cid, pid)
 
 	var wgRouteOutput sync.WaitGroup
 
-	if err := p.containers[cid].container.Run(&(p.containers[cid].processes[pid].process)); err != nil {
+	if err := ctr.container.Run(&(ctr.processes[pid].process)); err != nil {
 		agentLog.Errorf("Could not run process %s: %v", pid, err)
 		started <- err
 		return err
 	}
 
 	if terminal {
-		termMaster, err := utils.RecvFd(p.containers[cid].processes[pid].consoleSock)
+		termMaster, err := utils.RecvFd(ctr.processes[pid].consoleSock)
 		if err != nil {
 			return err
 		}
@@ -689,31 +716,31 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 			return err
 		}
 
-		p.containers[cid].processes[pid].termMaster = termMaster
+		ctr.processes[pid].termMaster = termMaster
 
-		if err := p.registerStdin(p.containers[cid].processes[pid].seqStdio, termMaster); err != nil {
+		if err := p.registerStdin(ctr.processes[pid].seqStdio, termMaster); err != nil {
 			return err
 		}
 
 		wgRouteOutput.Add(1)
-		go p.routeOutput(p.containers[cid].processes[pid].seqStdio, termMaster, &wgRouteOutput)
+		go p.routeOutput(ctr.processes[pid].seqStdio, termMaster, &wgRouteOutput)
 	} else {
-		if p.containers[cid].processes[pid].stdout != nil {
+		if ctr.processes[pid].stdout != nil {
 			wgRouteOutput.Add(1)
-			go p.routeOutput(p.containers[cid].processes[pid].seqStdio,
-				p.containers[cid].processes[pid].stdout, &wgRouteOutput)
+			go p.routeOutput(ctr.processes[pid].seqStdio,
+				ctr.processes[pid].stdout, &wgRouteOutput)
 		}
 
-		if p.containers[cid].processes[pid].stderr != nil {
+		if ctr.processes[pid].stderr != nil {
 			wgRouteOutput.Add(1)
-			go p.routeOutput(p.containers[cid].processes[pid].seqStderr,
-				p.containers[cid].processes[pid].stderr, &wgRouteOutput)
+			go p.routeOutput(ctr.processes[pid].seqStderr,
+				ctr.processes[pid].stderr, &wgRouteOutput)
 		}
 	}
 
 	started <- nil
 
-	processState, err := p.containers[cid].processes[pid].process.Wait()
+	processState, err := ctr.processes[pid].process.Wait()
 	if err != nil {
 		agentLog.Errorf("Wait for process %s failed: %v", pid, err)
 	}
@@ -725,7 +752,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	wgRouteOutput.Wait()
 
 	// Send empty message on tty channel to close the IO stream
-	p.sendSeq(p.containers[cid].processes[pid].seqStdio, []byte{})
+	p.sendSeq(ctr.processes[pid].seqStdio, []byte{})
 
 	// Get exit code
 	exitCode := uint8(255)
@@ -733,11 +760,12 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 		agentLog.Infof("ProcessState: %+v", processState)
 		if waitStatus, ok := processState.Sys().(syscall.WaitStatus); ok {
 			exitCode = uint8(waitStatus.ExitStatus())
+			agentLog.Infof("Exit Code after Wait: %+v", exitCode)
 		}
 	}
 
 	// Send exit code through tty channel
-	p.sendSeq(p.containers[cid].processes[pid].seqStdio, []byte{exitCode})
+	p.sendSeq(ctr.processes[pid].seqStdio, []byte{exitCode})
 
 	return nil
 }
@@ -866,6 +894,7 @@ func destroyPodCb(pod *pod, data []byte) error {
 		return nil
 	}
 
+	pod.containersLock.Lock()
 	for key, c := range pod.containers {
 		if err := c.removeContainer(key); err != nil {
 			return err
@@ -873,6 +902,7 @@ func destroyPodCb(pod *pod, data []byte) error {
 
 		delete(pod.containers, key)
 	}
+	pod.containersLock.Unlock()
 
 	if err := pod.removeNetwork(); err != nil {
 		return fmt.Errorf("Could not remove the network: %v", err)
@@ -925,7 +955,7 @@ func newContainerCb(pod *pod, data []byte) error {
 		payload.Process.ID = fmt.Sprintf("%d", payload.Process.Stdio)
 	}
 
-	if _, exist := pod.containers[payload.ID]; exist == true {
+	if ctr := pod.getContainer(payload.ID); ctr != nil {
 		return fmt.Errorf("Container %s already exists, impossible to create", payload.ID)
 	}
 
@@ -1039,7 +1069,7 @@ func newContainerCb(pod *pod, data []byte) error {
 		processes: processes,
 	}
 
-	pod.containers[payload.ID] = container
+	pod.setContainer(payload.ID, container)
 
 	started := make(chan error)
 	go pod.runContainerProcess(payload.ID, payload.Process.ID, payload.Process.Terminal, started)
@@ -1067,12 +1097,14 @@ func killContainerCb(pod *pod, data []byte) error {
 		return err
 	}
 
-	if _, exist := pod.containers[payload.ID]; exist == false {
+	ctr := pod.getContainer(payload.ID)
+
+	if ctr == nil {
 		return fmt.Errorf("Container %s not found, impossible to signal", payload.ID)
 	}
 
 	// Use AllProcesses to make sure we carry forward the flag passed by the runtime.
-	if err := pod.containers[payload.ID].container.Signal(payload.Signal, payload.AllProcesses); err != nil {
+	if err := ctr.container.Signal(payload.Signal, payload.AllProcesses); err != nil {
 		return err
 	}
 
@@ -1098,11 +1130,13 @@ func removeContainerCb(pod *pod, data []byte) error {
 		return err
 	}
 
-	if _, exist := pod.containers[payload.ID]; exist == false {
+	ctr := pod.getContainer(payload.ID)
+
+	if ctr == nil {
 		return fmt.Errorf("Container %s not found, impossible to remove", payload.ID)
 	}
 
-	status, err := pod.containers[payload.ID].container.Status()
+	status, err := ctr.container.Status()
 	if err != nil {
 		return err
 	}
@@ -1111,11 +1145,11 @@ func removeContainerCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Container %s running, impossible to remove", payload.ID)
 	}
 
-	if err := pod.containers[payload.ID].removeContainer(payload.ID); err != nil {
+	if err := ctr.removeContainer(payload.ID); err != nil {
 		return err
 	}
 
-	delete(pod.containers, payload.ID)
+	pod.deleteContainer(payload.ID)
 
 	return nil
 }
@@ -1135,11 +1169,13 @@ func execCb(pod *pod, data []byte) error {
 		payload.Process.ID = fmt.Sprintf("%d", payload.Process.Stdio)
 	}
 
-	if _, exist := pod.containers[payload.ContainerID]; exist == false {
+	ctr := pod.getContainer(payload.ContainerID)
+
+	if ctr == nil {
 		return fmt.Errorf("Container %s not found, impossible to execute process %s", payload.ContainerID, payload.Process.ID)
 	}
 
-	status, err := pod.containers[payload.ContainerID].container.Status()
+	status, err := ctr.container.Status()
 	if err != nil {
 		return err
 	}
@@ -1148,7 +1184,7 @@ func execCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Container %s not running, impossible to execute process %s", payload.ContainerID, payload.Process.ID)
 	}
 
-	if _, exist := pod.containers[payload.ContainerID].processes[payload.Process.ID]; exist == true {
+	if _, exist := ctr.processes[payload.Process.ID]; exist == true {
 		return fmt.Errorf("Process %s already exists", payload.Process.ID)
 	}
 
@@ -1157,7 +1193,7 @@ func execCb(pod *pod, data []byte) error {
 		return err
 	}
 
-	pod.containers[payload.ContainerID].processes[payload.Process.ID] = process
+	ctr.processes[payload.Process.ID] = process
 
 	started := make(chan error)
 	go pod.runContainerProcess(payload.ContainerID, payload.Process.ID, payload.Process.Terminal, started)
@@ -1210,7 +1246,9 @@ func winsizeCb(pod *pod, data []byte) error {
 		return err
 	}
 
-	status, err := pod.containers[cid].container.Status()
+	ctr := pod.getContainer(cid)
+	status, err := ctr.container.Status()
+
 	if err != nil {
 		return err
 	}
