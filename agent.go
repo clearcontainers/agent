@@ -126,6 +126,7 @@ type container struct {
 	container libcontainer.Container
 	config    configs.Config
 	processes map[string]*process
+	pod       *pod
 }
 
 type pod struct {
@@ -594,65 +595,67 @@ func (p *pod) sendSeq(seq uint64, data []byte) error {
 	return nil
 }
 
-func (p *pod) closeProcessStreams(cid, pid string) {
-	if p.containers[cid].processes[pid].termMaster != nil {
-		if err := p.containers[cid].processes[pid].termMaster.Close(); err != nil {
+func (c *container) closeProcessStreams(pid string) {
+	cid := c.container.ID()
+	if c.processes[pid].termMaster != nil {
+		if err := c.processes[pid].termMaster.Close(); err != nil {
 			agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
 		}
 
-		p.containers[cid].processes[pid].termMaster = nil
+		c.processes[pid].termMaster = nil
 	}
 
-	if p.containers[cid].processes[pid].stdout != nil {
-		if err := p.containers[cid].processes[pid].stdout.Close(); err != nil {
+	if c.processes[pid].stdout != nil {
+		if err := c.processes[pid].stdout.Close(); err != nil {
 			agentLog.Warnf("Could not close stdout for container %s, process %s: %v", cid, pid, err)
 		}
 
-		p.containers[cid].processes[pid].stdout = nil
+		c.processes[pid].stdout = nil
 	}
 
-	if p.containers[cid].processes[pid].stderr != nil {
-		if err := p.containers[cid].processes[pid].stderr.Close(); err != nil {
+	if c.processes[pid].stderr != nil {
+		if err := c.processes[pid].stderr.Close(); err != nil {
 			agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
 		}
 
-		p.containers[cid].processes[pid].stderr = nil
+		c.processes[pid].stderr = nil
 	}
 
-	p.unregisterStdin(p.containers[cid].processes[pid].seqStdio)
+	c.pod.unregisterStdin(c.processes[pid].seqStdio)
 
-	if p.containers[cid].processes[pid].stdin != nil {
-		if err := p.containers[cid].processes[pid].stdin.Close(); err != nil {
+	if c.processes[pid].stdin != nil {
+		if err := c.processes[pid].stdin.Close(); err != nil {
 			agentLog.Warnf("Could not close stdin for container %s, process %s: %v", cid, pid, err)
 		}
 
-		p.containers[cid].processes[pid].stdin = nil
+		c.processes[pid].stdin = nil
 	}
 }
 
-func (p *pod) closeProcessPipes(cid, pid string) {
-	if p.containers[cid].processes[pid].process.Stdout != nil {
-		if err := p.containers[cid].processes[pid].process.Stdout.(*os.File).Close(); err != nil {
+func (c *container) closeProcessPipes(pid string) {
+	cid := c.container.ID()
+	if c.processes[pid].process.Stdout != nil {
+		if err := c.processes[pid].process.Stdout.(*os.File).Close(); err != nil {
 			agentLog.Warnf("Could not close process.Stdout for container %s, process %s: %v", cid, pid, err)
 		}
 
-		p.containers[cid].processes[pid].process.Stdout = nil
+		c.processes[pid].process.Stdout = nil
 	}
 
-	if p.containers[cid].processes[pid].process.Stderr != nil {
-		if err := p.containers[cid].processes[pid].process.Stderr.(*os.File).Close(); err != nil {
+	if c.processes[pid].process.Stderr != nil {
+		if err := c.processes[pid].process.Stderr.(*os.File).Close(); err != nil {
 			agentLog.Warnf("Could not close process.Stderr for container %s, process %s: %v", cid, pid, err)
 		}
 
-		p.containers[cid].processes[pid].process.Stderr = nil
+		c.processes[pid].process.Stderr = nil
 	}
 
-	if p.containers[cid].processes[pid].process.Stdin != nil {
-		if err := p.containers[cid].processes[pid].process.Stdin.(*os.File).Close(); err != nil {
+	if c.processes[pid].process.Stdin != nil {
+		if err := c.processes[pid].process.Stdin.(*os.File).Close(); err != nil {
 			agentLog.Warnf("Could not close process.Stdin for container %s, process %s: %v", cid, pid, err)
 		}
 
-		p.containers[cid].processes[pid].process.Stdin = nil
+		c.processes[pid].process.Stdin = nil
 	}
 }
 
@@ -695,8 +698,8 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	ctr := p.getContainer(cid)
 
 	defer delete(ctr.processes, pid)
-	defer p.closeProcessStreams(cid, pid)
-	defer p.closeProcessPipes(cid, pid)
+	defer ctr.closeProcessStreams(pid)
+	defer ctr.closeProcessPipes(pid)
 
 	var wgRouteOutput sync.WaitGroup
 
@@ -746,7 +749,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	}
 
 	// Close pipes to terminate routeOutput() go routines.
-	p.closeProcessPipes(cid, pid)
+	ctr.closeProcessPipes(pid)
 
 	// Wait for routeOutput() go routines.
 	wgRouteOutput.Wait()
@@ -1064,6 +1067,7 @@ func newContainerCb(pod *pod, data []byte) error {
 	processes[payload.Process.ID] = builtProcess
 
 	container := &container{
+		pod:       pod,
 		container: libContContainer,
 		config:    config,
 		processes: processes,
