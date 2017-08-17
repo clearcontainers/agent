@@ -787,10 +787,15 @@ func (p *pod) buildProcess(hyperProcess hyper.Process) (*process, error) {
 		envList = append(envList, fmt.Sprintf("%s=%s", env.Env, env.Value))
 	}
 
+	// we can specify the user and the group separated by :
+	user := fmt.Sprintf("%s:%s", hyperProcess.User, hyperProcess.Group)
+
 	libContProcess := libcontainer.Process{
-		Cwd:  hyperProcess.Workdir,
-		Args: hyperProcess.Args,
-		Env:  envList,
+		Cwd:              hyperProcess.Workdir,
+		Args:             hyperProcess.Args,
+		Env:              envList,
+		User:             user,
+		AdditionalGroups: hyperProcess.AdditionalGroups,
 	}
 
 	proc := &process{
