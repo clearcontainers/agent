@@ -123,10 +123,11 @@ type process struct {
 }
 
 type container struct {
-	container libcontainer.Container
-	config    configs.Config
-	processes map[string]*process
-	pod       *pod
+	container     libcontainer.Container
+	config        configs.Config
+	processes     map[string]*process
+	pod           *pod
+	processesLock sync.RWMutex
 }
 
 type pod struct {
@@ -595,67 +596,105 @@ func (p *pod) sendSeq(seq uint64, data []byte) error {
 	return nil
 }
 
+func (c *container) getProcess(pid string) *process {
+	c.processesLock.RLock()
+	defer c.processesLock.RUnlock()
+
+	proc, exist := c.processes[pid]
+	if exist == false {
+		return nil
+	}
+
+	return proc
+}
+
+func (c *container) setProcess(pid string, process *process) {
+	c.processesLock.Lock()
+	c.processes[pid] = process
+	c.processesLock.Unlock()
+}
+
+func (c *container) deleteProcess(pid string) {
+	c.processesLock.Lock()
+	delete(c.processes, pid)
+	c.processesLock.Unlock()
+}
+
 func (c *container) closeProcessStreams(pid string) {
 	cid := c.container.ID()
-	if c.processes[pid].termMaster != nil {
-		if err := c.processes[pid].termMaster.Close(); err != nil {
+	proc := c.getProcess(pid)
+
+	if proc == nil {
+		agentLog.Warnf("Process %s for container %s does not exist anymore", pid, cid)
+		return
+	}
+
+	if proc.termMaster != nil {
+		if err := proc.termMaster.Close(); err != nil {
 			agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
 		}
 
-		c.processes[pid].termMaster = nil
+		proc.termMaster = nil
 	}
 
-	if c.processes[pid].stdout != nil {
-		if err := c.processes[pid].stdout.Close(); err != nil {
+	if proc.stdout != nil {
+		if err := proc.stdout.Close(); err != nil {
 			agentLog.Warnf("Could not close stdout for container %s, process %s: %v", cid, pid, err)
 		}
 
-		c.processes[pid].stdout = nil
+		proc.stdout = nil
 	}
 
-	if c.processes[pid].stderr != nil {
-		if err := c.processes[pid].stderr.Close(); err != nil {
+	if proc.stderr != nil {
+		if err := proc.stderr.Close(); err != nil {
 			agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
 		}
 
-		c.processes[pid].stderr = nil
+		proc.stderr = nil
 	}
 
 	c.pod.unregisterStdin(c.processes[pid].seqStdio)
 
-	if c.processes[pid].stdin != nil {
-		if err := c.processes[pid].stdin.Close(); err != nil {
+	if proc.stdin != nil {
+		if err := proc.stdin.Close(); err != nil {
 			agentLog.Warnf("Could not close stdin for container %s, process %s: %v", cid, pid, err)
 		}
 
-		c.processes[pid].stdin = nil
+		proc.stdin = nil
 	}
 }
 
 func (c *container) closeProcessPipes(pid string) {
 	cid := c.container.ID()
-	if c.processes[pid].process.Stdout != nil {
-		if err := c.processes[pid].process.Stdout.(*os.File).Close(); err != nil {
+	proc := c.getProcess(pid)
+
+	if proc == nil {
+		agentLog.Warnf("Process %s for container %s does not exist anymore", pid, cid)
+		return
+	}
+
+	if proc.process.Stdout != nil {
+		if err := proc.process.Stdout.(*os.File).Close(); err != nil {
 			agentLog.Warnf("Could not close process.Stdout for container %s, process %s: %v", cid, pid, err)
 		}
 
-		c.processes[pid].process.Stdout = nil
+		proc.process.Stdout = nil
 	}
 
-	if c.processes[pid].process.Stderr != nil {
-		if err := c.processes[pid].process.Stderr.(*os.File).Close(); err != nil {
+	if proc.process.Stderr != nil {
+		if err := proc.process.Stderr.(*os.File).Close(); err != nil {
 			agentLog.Warnf("Could not close process.Stderr for container %s, process %s: %v", cid, pid, err)
 		}
 
-		c.processes[pid].process.Stderr = nil
+		proc.process.Stderr = nil
 	}
 
-	if c.processes[pid].process.Stdin != nil {
-		if err := c.processes[pid].process.Stdin.(*os.File).Close(); err != nil {
+	if proc.process.Stdin != nil {
+		if err := proc.process.Stdin.(*os.File).Close(); err != nil {
 			agentLog.Warnf("Could not close process.Stdin for container %s, process %s: %v", cid, pid, err)
 		}
 
-		c.processes[pid].process.Stdin = nil
+		proc.process.Stdin = nil
 	}
 }
 
@@ -697,20 +736,24 @@ func setConsoleCarriageReturn(fd uintptr) error {
 func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan error) error {
 	ctr := p.getContainer(cid)
 
-	defer delete(ctr.processes, pid)
-	defer ctr.closeProcessStreams(pid)
-	defer ctr.closeProcessPipes(pid)
+	defer func() {
+		ctr.deleteProcess(pid)
+		ctr.closeProcessStreams(pid)
+		ctr.closeProcessPipes(pid)
+	}()
 
 	var wgRouteOutput sync.WaitGroup
 
-	if err := ctr.container.Run(&(ctr.processes[pid].process)); err != nil {
+	proc := ctr.getProcess(pid)
+
+	if err := ctr.container.Run(&(proc.process)); err != nil {
 		agentLog.Errorf("Could not run process %s: %v", pid, err)
 		started <- err
 		return err
 	}
 
 	if terminal {
-		termMaster, err := utils.RecvFd(ctr.processes[pid].consoleSock)
+		termMaster, err := utils.RecvFd(proc.consoleSock)
 		if err != nil {
 			return err
 		}
@@ -719,31 +762,31 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 			return err
 		}
 
-		ctr.processes[pid].termMaster = termMaster
+		proc.termMaster = termMaster
 
-		if err := p.registerStdin(ctr.processes[pid].seqStdio, termMaster); err != nil {
+		if err := p.registerStdin(proc.seqStdio, termMaster); err != nil {
 			return err
 		}
 
 		wgRouteOutput.Add(1)
-		go p.routeOutput(ctr.processes[pid].seqStdio, termMaster, &wgRouteOutput)
+		go p.routeOutput(proc.seqStdio, termMaster, &wgRouteOutput)
 	} else {
-		if ctr.processes[pid].stdout != nil {
+		if proc.stdout != nil {
 			wgRouteOutput.Add(1)
-			go p.routeOutput(ctr.processes[pid].seqStdio,
-				ctr.processes[pid].stdout, &wgRouteOutput)
+			go p.routeOutput(proc.seqStdio,
+				proc.stdout, &wgRouteOutput)
 		}
 
-		if ctr.processes[pid].stderr != nil {
+		if proc.stderr != nil {
 			wgRouteOutput.Add(1)
-			go p.routeOutput(ctr.processes[pid].seqStderr,
-				ctr.processes[pid].stderr, &wgRouteOutput)
+			go p.routeOutput(proc.seqStderr,
+				proc.stderr, &wgRouteOutput)
 		}
 	}
 
 	started <- nil
 
-	processState, err := ctr.processes[pid].process.Wait()
+	processState, err := proc.process.Wait()
 	if err != nil {
 		agentLog.Errorf("Wait for process %s failed: %v", pid, err)
 	}
@@ -755,7 +798,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	wgRouteOutput.Wait()
 
 	// Send empty message on tty channel to close the IO stream
-	p.sendSeq(ctr.processes[pid].seqStdio, []byte{})
+	p.sendSeq(proc.seqStdio, []byte{})
 
 	// Get exit code
 	exitCode := uint8(255)
@@ -768,7 +811,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	}
 
 	// Send exit code through tty channel
-	p.sendSeq(ctr.processes[pid].seqStdio, []byte{exitCode})
+	p.sendSeq(proc.seqStdio, []byte{exitCode})
 
 	return nil
 }
@@ -1188,16 +1231,18 @@ func execCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Container %s not running, impossible to execute process %s", payload.ContainerID, payload.Process.ID)
 	}
 
-	if _, exist := ctr.processes[payload.Process.ID]; exist == true {
+	process := ctr.getProcess(payload.Process.ID)
+
+	if process != nil {
 		return fmt.Errorf("Process %s already exists", payload.Process.ID)
 	}
 
-	process, err := pod.buildProcess(payload.Process)
+	process, err = pod.buildProcess(payload.Process)
 	if err != nil {
 		return err
 	}
 
-	ctr.processes[payload.Process.ID] = process
+	ctr.setProcess(payload.Process.ID, process)
 
 	started := make(chan error)
 	go pod.runContainerProcess(payload.ContainerID, payload.Process.ID, payload.Process.Terminal, started)
@@ -1223,12 +1268,19 @@ func pingCb(pod *pod, data []byte) error {
 }
 
 func (p *pod) findTermFromSeqID(seqID uint64) (*os.File, string, error) {
+	p.containersLock.RLock()
+	defer p.containersLock.RUnlock()
+
 	for cid, container := range p.containers {
+		container.processesLock.RLock()
+
 		for _, process := range container.processes {
 			if process.seqStdio == seqID {
+				container.processesLock.RUnlock()
 				return process.termMaster, cid, nil
 			}
 		}
+		container.processesLock.RUnlock()
 	}
 
 	return nil, "", fmt.Errorf("Could not find a process related to sequence %d", seqID)
