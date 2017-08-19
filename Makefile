@@ -38,7 +38,12 @@ SED = sed
 
 .DEFAULT: $(TARGET)
 $(TARGET): $(SOURCES) Makefile $(GENERATED_FILES)
-	go build -ldflags "-X main.Version=$(VERSION_COMMIT)" -o $@ .
+	@build_flags="" ; \
+	if [ "$$RACE_DETECTION" = true ] ; then \
+		build_flags="-race" ; \
+		echo "Building with $$build_flags" ; \
+	fi ; \
+	go build $$build_flags -ldflags "-X main.Version=$(VERSION_COMMIT)" -o $@ .
 
 install:
 	install -D $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)

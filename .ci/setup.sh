@@ -31,6 +31,8 @@ export test_repo_dir="${GOPATH}/src/${test_repo}"
 export runtime_repo="github.com/clearcontainers/runtime"
 export runtime_repo_dir="${GOPATH}/src/${runtime_repo}"
 
+export RACE_DETECTION=true
+
 # Clone Tests repository.
 go get "$test_repo"
 # Fixme: Remove after https://github.com/clearcontainers/runtime/pull/353
