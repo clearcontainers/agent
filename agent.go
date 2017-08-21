@@ -59,6 +59,11 @@ const (
 	statelessPassword  = "/usr/share/defaults/etc/passwd"
 	defaultGroup       = "/etc/group"
 	statelessGroup     = "/usr/share/defaults/etc/group"
+	kernelCmdlineFile  = "/proc/cmdline"
+	optionPrefix       = "agent."
+	logLevelFlag       = optionPrefix + "log"
+	defaultLogLevel    = logrus.InfoLevel
+	cannotGetTimeMsg   = "Failed to get time for event %s:%v"
 )
 
 var capsList = []string{
@@ -100,6 +105,10 @@ var capsList = []string{
 	"CAP_SYS_TTY_CONFIG",
 	"CAP_SYSLOG",
 	"CAP_WAKE_ALARM",
+}
+
+type agentConfig struct {
+	logLevel logrus.Level
 }
 
 type process struct {
@@ -153,7 +162,7 @@ func init() {
 		runtime.LockOSThread()
 		factory, _ := libcontainer.New("")
 		if err := factory.StartInitialization(); err != nil {
-			agentLog.Infof("init went wrong: %v", err)
+			agentLog.Errorf("init went wrong: %v", err)
 		}
 		panic("--this line should have never been executed, congratulations--")
 	}
@@ -163,7 +172,22 @@ func init() {
 var Version = "unknown"
 
 func main() {
+
+	agentLog.Formatter = &logrus.JSONFormatter{TimestampFormat: time.RFC3339Nano}
+	config := newConfig(defaultLogLevel)
+	if err := config.getConfig(kernelCmdlineFile); err != nil {
+		agentLog.Warnf("Failed to get config from ernel cmdline: %v", err)
+	}
+	applyConfig(config)
+
 	agentLog.Infof("Agent version: %s", Version)
+
+	if uptime, err := newEventTime(agentStartedEvent); err != nil {
+		agentLog.Errorf("Failed to get uptime %v", err)
+	} else {
+		agentLog.Infof("%s", uptime)
+	}
+
 	// Initialiaze wait group waiting for loops to be terminated
 	var wgLoops sync.WaitGroup
 	wgLoops.Add(1)
@@ -214,7 +238,7 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 				continue
 			}
 
-			agentLog.Infof("Read on ctl channel failed: %v", err)
+			agentLog.Errorf("Read on ctl channel failed: %v", err)
 			break
 		}
 
@@ -696,7 +720,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	processState, err := p.containers[cid].processes[pid].process.Wait()
 	if err != nil {
-		agentLog.Infof("Wait for process %s failed: %v", pid, err)
+		agentLog.Errorf("Wait for process %s failed: %v", pid, err)
 	}
 
 	// Close pipes to terminate routeOutput() go routines.
@@ -817,7 +841,12 @@ func (p *pod) runCmd(cmd hyper.HyperCmd, data []byte) error {
 		return fmt.Errorf("No callback found for command %q", hyper.CmdToString(cmd))
 	}
 
-	return cb(p, data)
+	agentLog.Infof("%s", hyper.CmdToString(cmd)+"_start")
+
+	cbErr := cb(p, data)
+
+	agentLog.Infof("%s", hyper.CmdToString(cmd)+"_end")
+	return cbErr
 }
 
 func startPodCb(pod *pod, data []byte) error {
@@ -1234,4 +1263,67 @@ func winsizeCb(pod *pod, data []byte) error {
 	}
 
 	return nil
+}
+
+func newConfig(level logrus.Level) agentConfig {
+	config := agentConfig{}
+	config.logLevel = level
+	return config
+}
+
+//Get the agent configuration from kernel cmdline
+func (c *agentConfig) getConfig(cmdLineFile string) error {
+
+	if cmdLineFile == "" {
+		return fmt.Errorf("Kernel cmdline file cannot be empty")
+	}
+
+	kernelCmdline, err := ioutil.ReadFile(cmdLineFile)
+	if err != nil {
+		return err
+	}
+
+	words := strings.Fields(string(kernelCmdline))
+	for _, w := range words {
+		word := string(w)
+		if err := c.parseCmdlineOption(word); err != nil {
+			agentLog.Warnf("Failed to parse kernel option %s: %v", word, err)
+		}
+	}
+	return nil
+}
+
+func applyConfig(config agentConfig) {
+	agentLog.SetLevel(config.logLevel)
+}
+
+//Parse a string that represents a kernel cmdline option
+func (c *agentConfig) parseCmdlineOption(option string) error {
+
+	const (
+		optionPosition = iota
+		valuePosition
+		optionSeparator = "="
+	)
+
+	split := strings.Split(option, optionSeparator)
+
+	if len(split) < valuePosition+1 {
+		return nil
+	}
+
+	switch split[optionPosition] {
+	case logLevelFlag:
+		level, err := logrus.ParseLevel(split[valuePosition])
+		if err != nil {
+			return err
+		}
+		c.logLevel = level
+	default:
+		if strings.HasPrefix(split[optionPosition], optionPrefix) {
+			return fmt.Errorf("Unknown option %s", split[optionPosition])
+		}
+	}
+	return nil
+
 }
