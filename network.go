@@ -148,9 +148,25 @@ func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 }
 
 func setupRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
+	initRouteList, err := netHandle.RouteList(nil, netlink.FAMILY_ALL)
+	if err != nil {
+		return err
+	}
+
 	for _, route := range routes {
 		var dst *net.IPNet
 		var err error
+
+		// Find link index from route's device name
+		link, err := netHandle.LinkByName(route.Device)
+		if err != nil {
+			return fmt.Errorf("Could not find link from device name %s: %v", route.Device, err)
+		}
+
+		linkAttrs := link.Attrs()
+		if linkAttrs == nil {
+			return fmt.Errorf("Could not find link index for device %v", route.Device)
+		}
 
 		if route.Dest != "" && route.Dest != "default" {
 			destIP := net.ParseIP(route.Dest)
@@ -164,21 +180,15 @@ func setupRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
 				route.Dest += "/" + netMask
 			}
 
+			if routeDestExist(linkAttrs.Index, initRouteList, route.Dest) {
+				agentLog.Infof("Route destination %q already exists, skip it", route.Dest)
+				continue
+			}
+
 			_, dst, err = net.ParseCIDR(route.Dest)
 			if err != nil {
 				return fmt.Errorf("Could not parse route destination %s: %v", route.Dest, err)
 			}
-		}
-
-		// Find link index from route's device name
-		link, err := netHandle.LinkByName(route.Device)
-		if err != nil {
-			return fmt.Errorf("Could not find link from device name %s: %v", route.Device, err)
-		}
-
-		linkAttrs := link.Attrs()
-		if linkAttrs == nil {
-			return fmt.Errorf("Could not find link index for device %v", route.Device)
 		}
 
 		netRoute := &netlink.Route{
@@ -189,11 +199,22 @@ func setupRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
 		}
 
 		if err := netHandle.RouteReplace(netRoute); err != nil {
-			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %v", route.Dest, route.Src, route.Gateway, route.Device, err)
+			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %v",
+				route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 	}
 
 	return nil
+}
+
+func routeDestExist(ifaceIdx int, routeList []netlink.Route, dest string) bool {
+	for _, route := range routeList {
+		if route.LinkIndex == ifaceIdx && route.Dst.String() == dest {
+			return true
+		}
+	}
+
+	return false
 }
 
 func setupDNS(netHandle *netlink.Handle, dns []string) error {
