@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -172,6 +174,12 @@ var callbackList = map[hyper.HyperCmd]cmdCb{
 	hyper.WinsizeCmd:         winsizeCb,
 }
 
+type cmdCbWithReply func(*pod, []byte) ([]byte, error)
+
+var callbackWithReplyList = map[hyper.HyperCmd]cmdCbWithReply{
+	hyper.PsContainerCmd: processListCb,
+}
+
 var agentLog = logrus.WithFields(logrus.Fields{
 	"name": name,
 	"pid":  os.Getpid(),
@@ -297,12 +305,17 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 
 		fieldLogger.Info("Received command")
 
-		if err := p.runCmd(cmd, data); err != nil {
+		response, err := p.runCmd(cmd, data)
+		if err != nil {
 			fieldLogger.WithError(err).Info("command failed")
 			reply = hyper.ErrorCmd
 		}
 
-		if err := p.sendCmd(reply, []byte{}); err != nil {
+		if response == nil {
+			response = []byte{}
+		}
+
+		if err := p.sendCmd(reply, response); err != nil {
 			fieldLogger.WithError(err).Info("reply send failed")
 			break
 		}
@@ -972,20 +985,31 @@ func (p *pod) buildProcess(hyperProcess hyper.Process) (*process, error) {
 	return p.buildProcessWithoutTerminal(proc)
 }
 
-func (p *pod) runCmd(cmd hyper.HyperCmd, data []byte) error {
+func (p *pod) runCmd(cmd hyper.HyperCmd, data []byte) ([]byte, error) {
+	var cbWithReply cmdCbWithReply
 	cb, exist := callbackList[cmd]
 	if exist == false {
-		return fmt.Errorf("No callback found for command %q", hyper.CmdToString(cmd))
+		cbWithReply, exist = callbackWithReplyList[cmd]
+		if exist == false {
+			return nil, fmt.Errorf("No callback found for command %q", hyper.CmdToString(cmd))
+		}
 	}
 
 	// XXX: Do not change the format of these two log calls: they are used by the
 	// XXX: tests!
 	agentLog.Infof("%s", hyper.CmdToString(cmd)+"_start")
 
-	cbErr := cb(p, data)
+	var cbErr error
+	var response []byte
+
+	if cb != nil {
+		cbErr = cb(p, data)
+	} else if cbWithReply != nil {
+		response, cbErr = cbWithReply(p, data)
+	}
 
 	agentLog.Infof("%s", hyper.CmdToString(cmd)+"_end")
-	return cbErr
+	return response, cbErr
 }
 
 func startPodCb(pod *pod, data []byte) error {
@@ -1284,6 +1308,82 @@ func (c *container) removeContainer(id string) error {
 	return unmountContainerRootFs(id, c.config.Rootfs)
 }
 
+func (c *container) processList(id string, format string, args []string) ([]byte, error) {
+	pids, err := c.container.Processes()
+	if err != nil {
+		return nil, err
+	}
+
+	switch format {
+	case "table":
+	case "json":
+		return json.Marshal(pids)
+	default:
+		return nil, fmt.Errorf("invalid format option")
+	}
+
+	psArgs := args
+	if len(psArgs) == 0 {
+		psArgs = []string{"-ef"}
+	}
+
+	cmd := exec.Command("ps", psArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %s", err, output)
+	}
+
+	lines := strings.Split(string(output), "\n")
+
+	pidIndex := getPIDIndex(lines[0])
+
+	// PID field not found
+	if pidIndex == -1 {
+		return nil, fmt.Errorf("failed to find PID field in ps output")
+	}
+
+	// append title
+	var result bytes.Buffer
+
+	result.WriteString(lines[0] + "\n")
+
+	for _, line := range lines[1:] {
+		if len(line) == 0 {
+			continue
+		}
+		fields := strings.Fields(line)
+		if pidIndex >= len(fields) {
+			return nil, fmt.Errorf("missing PID field: %s", line)
+		}
+
+		p, err := strconv.Atoi(fields[pidIndex])
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert pid to int: %s", fields[pidIndex])
+		}
+
+		// appends pid line
+		for _, pid := range pids {
+			if pid == p {
+				result.WriteString(line + "\n")
+				break
+			}
+		}
+	}
+
+	return result.Bytes(), nil
+}
+
+func getPIDIndex(title string) int {
+	// looking for PID field in ps title
+	fields := strings.Fields(title)
+	for i, f := range fields {
+		if f == "PID" {
+			return i
+		}
+	}
+	return -1
+}
+
 func removeContainerCb(pod *pod, data []byte) error {
 	var payload hyper.RemoveContainer
 
@@ -1317,6 +1417,38 @@ func removeContainerCb(pod *pod, data []byte) error {
 	pod.deleteContainer(payload.ID)
 
 	return nil
+}
+
+func processListCb(pod *pod, data []byte) ([]byte, error) {
+	var payload hyper.PsContainer
+
+	if pod.running == false {
+		return nil, fmt.Errorf("Pod not started, impossible to list processes")
+	}
+
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+
+	if _, exist := pod.containers[payload.ID]; exist == false {
+		return nil, fmt.Errorf("Container %s not found, impossible to list processes", payload.ID)
+	}
+
+	status, err := pod.containers[payload.ID].container.Status()
+	if err != nil {
+		return nil, err
+	}
+
+	if status != libcontainer.Running {
+		return nil, fmt.Errorf("Container %s is not running, impossible to list processes", payload.ID)
+	}
+
+	response, err := pod.containers[payload.ID].processList(payload.ID, payload.Format, payload.Args)
+	if err != nil {
+		return nil, err
+	}
+
+	return response, nil
 }
 
 func execCb(pod *pod, data []byte) error {

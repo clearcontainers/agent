@@ -48,6 +48,7 @@ const (
 	SetupInterfaceCmd
 	SetupRouteCmd
 	RemoveContainerCmd
+	PsContainerCmd
 	ProcessAsyncEventCmd
 )
 
@@ -63,6 +64,7 @@ var stringCmdList = map[HyperCmd]string{
 	ErrorCmd:           "error",
 	PingCmd:            "ping",
 	WinsizeCmd:         "winsize",
+	PsContainerCmd:     "pscontainer",
 }
 
 // IPAddress describes an IP address and its network mask.
@@ -165,6 +167,13 @@ type KillContainer struct {
 // RemoveContainer describes the format expected by a REMOVECONTAINER command.
 type RemoveContainer struct {
 	ID string `json:"container"`
+}
+
+// PsContainer describes the format expected by a PSCONTAINER command.
+type PsContainer struct {
+	ID     string   `json:"container"`
+	Format string   `json:"format"`
+	Args   []string `json:"psargs"`
 }
 
 // Exec describes the format expected by a EXECCMD command.
