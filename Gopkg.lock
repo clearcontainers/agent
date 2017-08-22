@@ -83,7 +83,7 @@
   branch = "master"
   name = "github.com/opencontainers/runc"
   packages = ["libcontainer","libcontainer/apparmor","libcontainer/cgroups","libcontainer/cgroups/fs","libcontainer/cgroups/rootless","libcontainer/cgroups/systemd","libcontainer/configs","libcontainer/configs/validate","libcontainer/criurpc","libcontainer/keys","libcontainer/nsenter","libcontainer/seccomp","libcontainer/stacktrace","libcontainer/system","libcontainer/user","libcontainer/utils"]
-  revision = "e775f0fba3ea329b8b766451c892c41a3d49594d"
+  revision = "ae2948042b08ad3d6d13cd09f40a50ffff4fc688"
 
 [[projects]]
   name = "github.com/opencontainers/runtime-spec"

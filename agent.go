@@ -711,11 +711,6 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 		}
 	}
 
-	if err := reapChildProcesses(); err != nil {
-		agentLog.Errorf("Could not reap the child: %v", err)
-		return err
-	}
-
 	started <- nil
 
 	processState, err := p.containers[cid].processes[pid].process.Wait()
@@ -743,20 +738,6 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	// Send exit code through tty channel
 	p.sendSeq(p.containers[cid].processes[pid].seqStdio, []byte{exitCode})
-
-	return nil
-}
-
-func reapChildProcesses() error {
-	var ws unix.WaitStatus
-	var rus unix.Rusage
-
-	pid, err := unix.Wait4(0, &ws, 0, &rus)
-	if err != nil {
-		return err
-	}
-
-	agentLog.Infof("Process %d reaped", pid)
 
 	return nil
 }
