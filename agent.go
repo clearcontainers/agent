@@ -128,6 +128,7 @@ type container struct {
 	processes     map[string]*process
 	pod           *pod
 	processesLock sync.RWMutex
+	wgProcesses   sync.WaitGroup
 }
 
 type pod struct {
@@ -737,6 +738,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	ctr := p.getContainer(cid)
 
 	defer func() {
+		ctr.wgProcesses.Done()
 		ctr.deleteProcess(pid)
 		ctr.closeProcessStreams(pid)
 		ctr.closeProcessPipes(pid)
@@ -1118,6 +1120,8 @@ func newContainerCb(pod *pod, data []byte) error {
 
 	pod.setContainer(payload.ID, container)
 
+	container.wgProcesses.Add(1)
+
 	started := make(chan error)
 	go pod.runContainerProcess(payload.ID, payload.Process.ID, payload.Process.Terminal, started)
 
@@ -1159,6 +1163,8 @@ func killContainerCb(pod *pod, data []byte) error {
 }
 
 func (c *container) removeContainer(id string) error {
+	c.wgProcesses.Wait()
+
 	if err := c.container.Destroy(); err != nil {
 		return err
 	}
@@ -1243,6 +1249,8 @@ func execCb(pod *pod, data []byte) error {
 	}
 
 	ctr.setProcess(payload.Process.ID, process)
+
+	ctr.wgProcesses.Add(1)
 
 	started := make(chan error)
 	go pod.runContainerProcess(payload.ContainerID, payload.Process.ID, payload.Process.Terminal, started)
