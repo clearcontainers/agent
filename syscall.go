@@ -103,7 +103,8 @@ func mountShareDir(tag string) error {
 		return err
 	}
 
-	return syscall.Mount(tag, mountShareDirDest, type9pFs, syscall.MS_MGC_VAL|syscall.MS_NODEV, "trans=virtio")
+	return syscall.Mount(tag, mountShareDirDest, type9pFs, syscall.MS_MGC_VAL|syscall.MS_NODEV, "trans=virtio,version=9p2000.L,posixacl,cache=mmap")
+
 }
 
 func unmountShareDir() error {
