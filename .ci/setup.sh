@@ -22,6 +22,9 @@
 set -e
 set -x
 
+script_dir=$(dirname $(readlink -f "$0"))
+source "${script_dir}/ci-common.sh"
+
 export github_project="github.com/clearcontainers/agent"
 export project_dir="${GOPATH}/src/${github_project}"
 
@@ -66,7 +69,6 @@ docker info | grep 'Default Runtime: cc-runtime'
 #Install agent in last image
 clr_dl_site="https://download.clearlinux.org"
 clr_release=$(curl -L "${clr_dl_site}/latest")
-cc_image_path="/usr/share/clear-containers/clear-containers.img"
 MOUNT_DIR="$(pwd)/mount_dir"
 
 # Download last container image
