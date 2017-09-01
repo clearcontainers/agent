@@ -28,20 +28,10 @@ export project_dir="${GOPATH}/src/${github_project}"
 export test_repo="github.com/clearcontainers/tests"
 export test_repo_dir="${GOPATH}/src/${test_repo}"
 
-export runtime_repo="github.com/clearcontainers/runtime"
-export runtime_repo_dir="${GOPATH}/src/${runtime_repo}"
-
 export RACE_DETECTION=true
 
 # Clone Tests repository.
 go get "$test_repo"
-# Fixme: Remove after https://github.com/clearcontainers/runtime/pull/353
-# is merged
-# Change runtime target
-go get -d "${runtime_repo}"
-pushd "${runtime_repo_dir}"
-sed -i 's/cc-agent.target/clear-containers.target/' create.go
-popd
 
 # Install libudev-dev required for go-udev vendor dependency
 sudo apt-get install -y libudev-dev
@@ -62,6 +52,10 @@ then
     exit 0
 fi
 
+pushd "${test_repo_dir}"
+sudo -E PATH=$PATH bash -c ".ci/setup.sh"
+popd
+
 # Make sure we have the package dependencies this project needs to be built.
 # In semaphoreci the agent repo is already on the Semaphore system
 # at the commit version we want to test.
@@ -70,10 +64,6 @@ go get -d ${github_project} || true
 pushd ${project_dir}
 echo "Build ${github_project}"
 make -j$(nproc)
-popd
-
-pushd "${test_repo_dir}"
-sudo -E PATH=$PATH bash -c ".ci/setup.sh"
 popd
 
 #Verify Clear Containers installation is working
