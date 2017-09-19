@@ -36,21 +36,15 @@ go get "$test_repo"
 # Install libudev-dev required for go-udev vendor dependency
 sudo apt-get install -y libudev-dev
 
-if [ "$TRAVIS" = true ]
-then
-    # Check the commits in the branch
-    checkcommits_dir="${test_repo_dir}/cmd/checkcommits"
-    (cd "${checkcommits_dir}" && make)
-    checkcommits \
-        --need-fixes \
-        --need-sign-offs \
-        --body-length 72 \
-        --subject-length 75 \
-        --verbose
-    # Travis doesn't provide a VT-x environment, so nothing more to do
-    # here.
-    exit 0
-fi
+# Check the commits in the branch
+checkcommits_dir="${test_repo_dir}/cmd/checkcommits"
+(cd "${checkcommits_dir}" && make)
+checkcommits \
+	--need-fixes \
+	--need-sign-offs \
+	--body-length 72 \
+	--subject-length 75 \
+	--verbose
 
 pushd "${test_repo_dir}"
 sudo -E PATH=$PATH bash -c ".ci/setup.sh"
@@ -67,7 +61,7 @@ make -j$(nproc)
 popd
 
 #Verify Clear Containers installation is working
-docker info | grep 'Default Runtime: cc30'
+docker info | grep 'Default Runtime: cc-runtime'
 
 #Install agent in last image
 clr_dl_site="https://download.clearlinux.org"
