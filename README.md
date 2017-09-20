@@ -1,4 +1,5 @@
-[![Build Status](https://travis-ci.org/clearcontainers/agent.svg?branch=master)](https://travis-ci.org/clearcontainers/agent)
+[![Build Status](http://cc-jenkins-ci.westus2.cloudapp.azure.com/job/clear-containers-agent-azure-ubuntu-16-04/badge/icon)](http://cc-jenkins-ci.westus2.cloudapp.azure.com/job/clear-containers-agent-azure-ubuntu-16-04/)
+[![Build Status](http://cc-jenkins-ci.westus2.cloudapp.azure.com/job/clear-containers-agent-azure-ubuntu-17-04/badge/icon)](http://cc-jenkins-ci.westus2.cloudapp.azure.com/job/clear-containers-agent-azure-ubuntu-17-04/)
 [![Go Report Card](https://goreportcard.com/badge/github.com/clearcontainers/agent)](https://goreportcard.com/report/github.com/clearcontainers/agent)
 [![Coverage Status](https://coveralls.io/repos/github/clearcontainers/agent/badge.svg?branch=master)](https://coveralls.io/github/clearcontainers/agent?branch=master)
 
