@@ -21,6 +21,7 @@ import (
 	"net"
 
 	hyper "github.com/clearcontainers/agent/api"
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -115,8 +116,14 @@ func setupInterface(netHandle *netlink.Handle, iface hyper.NetIface, link netlin
 func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 	for _, iface := range ifaces {
 		var link netlink.Link
+
+		fieldLogger := agentLog.WithFields(logrus.Fields{
+			"mac-address":    iface.HwAddr,
+			"interface-name": iface.Name,
+		})
+
 		if iface.HwAddr != "" {
-			agentLog.Infof("Get the interface from its MAC address %q", iface.HwAddr)
+			fieldLogger.Info("Getting interface from MAC address")
 
 			// Find the interface link from its hardware address
 			var err error
@@ -125,7 +132,7 @@ func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 				return err
 			}
 		} else if iface.Name != "" {
-			agentLog.Infof("Get the interface from its name %s", iface.Name)
+			fieldLogger.Info("Getting interface from name")
 
 			// Find the interface link from its name
 			var err error
@@ -137,7 +144,7 @@ func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 			return fmt.Errorf("Interface HwAddr and Name are both empty")
 		}
 
-		agentLog.Infof("Link found %+v", link)
+		fieldLogger.WithField("link", fmt.Sprintf("%+v", link)).Infof("Link found")
 
 		if err := setupInterface(netHandle, iface, link); err != nil {
 			return err
@@ -181,7 +188,7 @@ func setupRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
 			}
 
 			if routeDestExist(linkAttrs.Index, initRouteList, route.Dest) {
-				agentLog.Infof("Route destination %q already exists, skip it", route.Dest)
+				agentLog.WithField("route-destination", route.Dest).Info("Route destination already exists, skipping")
 				continue
 			}
 

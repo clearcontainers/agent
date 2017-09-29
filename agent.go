@@ -180,14 +180,14 @@ func main() {
 	agentLog.Formatter = &logrus.JSONFormatter{TimestampFormat: time.RFC3339Nano}
 	config := newConfig(defaultLogLevel)
 	if err := config.getConfig(kernelCmdlineFile); err != nil {
-		agentLog.Warnf("Failed to get config from ernel cmdline: %v", err)
+		agentLog.WithField("error", err).Warn("Failed to get config from kernel cmdline")
 	}
 	applyConfig(config)
 
-	agentLog.Infof("Agent version: %s", Version)
+	agentLog.WithField("version", Version).Info()
 
 	if uptime, err := newEventTime(agentStartedEvent); err != nil {
-		agentLog.Errorf("Failed to get uptime %v", err)
+		agentLog.WithField("error", err).Error("Failed to get uptime")
 	} else {
 		agentLog.Infof("%s", uptime)
 	}
@@ -205,14 +205,14 @@ func main() {
 
 	// Open serial ports and write on both CTL and TTY channels
 	if err := pod.openChannels(); err != nil {
-		agentLog.Errorf("Could not open channels: %v", err)
+		agentLog.WithField("error", err).Error("Could not open channels")
 		return
 	}
 	defer pod.closeChannels()
 
 	// Setup users and groups
 	if err := pod.setupUsersAndGroups(); err != nil {
-		agentLog.Errorf("Could not setup users and groups: %v", err)
+		agentLog.WithField("error", err).Error("Could not setup users and groups")
 		return
 	}
 
@@ -250,10 +250,16 @@ func (p *pod) deleteContainer(id string) {
 }
 
 func (p *pod) controlLoop(wg *sync.WaitGroup) {
+	fieldLogger := agentLog.WithField("channel", "ctl")
+
 	// Send READY right after it has connected.
 	// This allows to block until the connection is up.
 	if err := p.sendCmd(hyper.ReadyCmd, []byte{}); err != nil {
-		agentLog.Errorf("Could not send 'ready' command: %v", err)
+		fieldLogger.WithFields(
+			logrus.Fields{
+				"error":   err,
+				"command": "ready",
+			}).Error("Failed to send command")
 		goto out
 	}
 
@@ -266,19 +272,21 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 				continue
 			}
 
-			agentLog.Errorf("Read on ctl channel failed: %v", err)
+			fieldLogger.WithField("error", err).Errorf("Read failed")
 			break
 		}
 
-		agentLog.Infof("Received %q command", hyper.CmdToString(cmd))
+		fieldLogger = fieldLogger.WithField("command", hyper.CmdToString(cmd))
+
+		fieldLogger.Info("Received command")
 
 		if err := p.runCmd(cmd, data); err != nil {
-			agentLog.Errorf("Run %q command failed: %v", hyper.CmdToString(cmd), err)
+			fieldLogger.WithField("error", err).Info("command failed")
 			reply = hyper.ErrorCmd
 		}
 
 		if err := p.sendCmd(reply, []byte{}); err != nil {
-			agentLog.Errorf("Send reply on ctl channel failed: %v", err)
+			fieldLogger.WithField("error", err).Info("reply send failed")
 			break
 		}
 
@@ -293,6 +301,9 @@ out:
 
 func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 	// Wait for reading something on TTY
+
+	fieldLogger := agentLog.WithField("channel", "tty")
+
 	for {
 		seq, data, err := p.readTty()
 		if err != nil {
@@ -301,38 +312,52 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 				continue
 			}
 
-			agentLog.Infof("Read on tty channel failed: %v", err)
+			fieldLogger.WithField("error", err).Info("Read failed")
 			break
 		}
 
-		agentLog.Infof("Read from TTY\n")
+		fieldLogger.Info("Read from channel")
 
 		if seq == uint64(0) || data == nil {
 			continue
 		}
 
-		agentLog.Infof("Read from tty: sequence %d / message %s", seq, string(data))
+		fieldLogger = fieldLogger.WithFields(logrus.Fields{
+			"sequence": seq,
+			"message":  string(data),
+		})
+
+		fieldLogger.Info("Read from channel")
+
+		// message is now logged, so remove it to avoid bloating the
+		// logs.
+		delete(fieldLogger.Data, "message")
 
 		// Lock the list before we access it.
 		p.stdinLock.Lock()
 
+		fieldLogger = fieldLogger.WithField("stream", "stdin")
+
 		file, exist := p.stdinList[seq]
 		if !exist {
-			agentLog.Infof("Sequence %d not found for stdin", seq)
+			fieldLogger.Info("Sequence not found")
 			p.stdinLock.Unlock()
 			continue
 		}
 
 		p.stdinLock.Unlock()
 
-		agentLog.Infof("Sequence %d found, writing data to stdin", seq)
+		fieldLogger.Info("Sequence found, writing data")
 
 		n, err := file.Write(data)
 		if err != nil {
-			agentLog.Errorf("Write to process stdin failed: %v", err)
+			fieldLogger.WithField("error", err).Error("Write to process failed")
 		}
 
-		agentLog.Infof("%d bytes written out of %d", n, len(data))
+		fieldLogger.WithFields(logrus.Fields{
+			"bytes_written": n,
+			"bytes_total":   len(data),
+		}).Info("bytes written")
 	}
 
 	wg.Done()
@@ -448,17 +473,12 @@ func findVirtualSerialPath(serialName string) (string, error) {
 
 	for _, port := range ports {
 		path := filepath.Join(virtIOPath, port, "name")
-		if _, err := os.Stat(path); err != nil {
-			if os.IsNotExist(err) {
-				agentLog.Debugf("Skip parsing of %s as it does not exist", path)
-				continue
-			}
-
-			return "", err
-		}
-
 		content, err := ioutil.ReadFile(path)
 		if err != nil {
+			if os.IsNotExist(err) {
+				agentLog.WithField("file", path).Debug("Skip parsing of non-existent file")
+				continue
+			}
 			return "", err
 		}
 
@@ -625,14 +645,22 @@ func (c *container) closeProcessStreams(pid string) {
 	cid := c.container.ID()
 	proc := c.getProcess(pid)
 
+	fieldLogger := agentLog.WithFields(logrus.Fields{
+		"pid":       pid,
+		"container": cid,
+	})
+
 	if proc == nil {
-		agentLog.Warnf("Process %s for container %s does not exist anymore", pid, cid)
+		fieldLogger.Warn("Container process no longer exists")
 		return
 	}
 
 	if proc.termMaster != nil {
 		if err := proc.termMaster.Close(); err != nil {
-			agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
+			fieldLogger.WithFields(logrus.Fields{
+				"stream": "master-terminal",
+				"error":  err,
+			}).Warn("Could not close container stream")
 		}
 
 		proc.termMaster = nil
@@ -640,7 +668,10 @@ func (c *container) closeProcessStreams(pid string) {
 
 	if proc.stdout != nil {
 		if err := proc.stdout.Close(); err != nil {
-			agentLog.Warnf("Could not close stdout for container %s, process %s: %v", cid, pid, err)
+			fieldLogger.WithFields(logrus.Fields{
+				"stream": "stdout",
+				"error":  err,
+			}).Warn("Could not close container stream")
 		}
 
 		proc.stdout = nil
@@ -648,7 +679,10 @@ func (c *container) closeProcessStreams(pid string) {
 
 	if proc.stderr != nil {
 		if err := proc.stderr.Close(); err != nil {
-			agentLog.Warnf("Could not close stderr for container %s, process %s: %v", cid, pid, err)
+			fieldLogger.WithFields(logrus.Fields{
+				"stream": "stderr",
+				"error":  err,
+			}).Warn("Could not close container stream")
 		}
 
 		proc.stderr = nil
@@ -658,7 +692,10 @@ func (c *container) closeProcessStreams(pid string) {
 
 	if proc.stdin != nil {
 		if err := proc.stdin.Close(); err != nil {
-			agentLog.Warnf("Could not close stdin for container %s, process %s: %v", cid, pid, err)
+			fieldLogger.WithFields(logrus.Fields{
+				"stream": "stdin",
+				"error":  err,
+			}).Warn("Could not close container stream")
 		}
 
 		proc.stdin = nil
@@ -669,14 +706,22 @@ func (c *container) closeProcessPipes(pid string) {
 	cid := c.container.ID()
 	proc := c.getProcess(pid)
 
+	fieldLogger := agentLog.WithFields(logrus.Fields{
+		"pid":       pid,
+		"container": cid,
+	})
+
 	if proc == nil {
-		agentLog.Warnf("Process %s for container %s does not exist anymore", pid, cid)
+		fieldLogger.Warnf("Container process no longer exists")
 		return
 	}
 
 	if proc.process.Stdout != nil {
 		if err := proc.process.Stdout.(*os.File).Close(); err != nil {
-			agentLog.Warnf("Could not close process.Stdout for container %s, process %s: %v", cid, pid, err)
+			fieldLogger.WithFields(logrus.Fields{
+				"error":  err,
+				"stream": "stdout",
+			}).Warn("Could not close process stream")
 		}
 
 		proc.process.Stdout = nil
@@ -684,7 +729,10 @@ func (c *container) closeProcessPipes(pid string) {
 
 	if proc.process.Stderr != nil {
 		if err := proc.process.Stderr.(*os.File).Close(); err != nil {
-			agentLog.Warnf("Could not close process.Stderr for container %s, process %s: %v", cid, pid, err)
+			fieldLogger.WithFields(logrus.Fields{
+				"error":  err,
+				"stream": "stderr",
+			}).Warn("Could not close process stream")
 		}
 
 		proc.process.Stderr = nil
@@ -692,7 +740,10 @@ func (c *container) closeProcessPipes(pid string) {
 
 	if proc.process.Stdin != nil {
 		if err := proc.process.Stdin.(*os.File).Close(); err != nil {
-			agentLog.Warnf("Could not close process.Stdin for container %s, process %s: %v", cid, pid, err)
+			fieldLogger.WithFields(logrus.Fields{
+				"error":  err,
+				"stream": "stdin",
+			}).Warn("Could not close process stream")
 		}
 
 		proc.process.Stdin = nil
@@ -701,16 +752,18 @@ func (c *container) closeProcessPipes(pid string) {
 
 // Executed as a go routine to route stdout and stderr to the TTY channel.
 func (p *pod) routeOutput(seq uint64, stream *os.File, wg *sync.WaitGroup) {
+	fieldLogger := agentLog.WithField("sequence", seq)
+
 	for {
 		buf := make([]byte, 1024)
 
 		n, err := stream.Read(buf)
 		if err != nil {
-			agentLog.Infof("Stream %d has been closed: %v", seq, err)
+			fieldLogger.WithField("error", err).Info("Sequence has been closed")
 			break
 		}
 
-		agentLog.Infof("Read from stream seq %d: %q", seq, string(buf[:n]))
+		fieldLogger.WithField("data", string(buf[:n])).Info("Read from sequence")
 		p.sendSeq(seq, buf[:n])
 	}
 
@@ -748,8 +801,10 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	proc := ctr.getProcess(pid)
 
+	fieldLogger := agentLog.WithField("pid", pid)
+
 	if err := ctr.container.Run(&(proc.process)); err != nil {
-		agentLog.Errorf("Could not run process %s: %v", pid, err)
+		fieldLogger.WithField("error", err).Error("Could not run process")
 		started <- err
 		return err
 	}
@@ -790,7 +845,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	processState, err := proc.process.Wait()
 	if err != nil {
-		agentLog.Errorf("Wait for process %s failed: %v", pid, err)
+		fieldLogger.WithField("error", err).Error("Process wait failed")
 	}
 
 	// Close pipes to terminate routeOutput() go routines.
@@ -805,10 +860,12 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	// Get exit code
 	exitCode := uint8(255)
 	if processState != nil {
-		agentLog.Infof("ProcessState: %+v", processState)
+		fieldLogger = fieldLogger.WithField("process-state", fmt.Sprintf("%+v", processState))
+		fieldLogger.Info("Got process state")
+
 		if waitStatus, ok := processState.Sys().(syscall.WaitStatus); ok {
 			exitCode = uint8(waitStatus.ExitStatus())
-			agentLog.Infof("Exit Code after Wait: %+v", exitCode)
+			fieldLogger.WithField("exit-code", exitCode).Info("got wait exit code")
 		}
 	}
 
@@ -898,6 +955,8 @@ func (p *pod) runCmd(cmd hyper.HyperCmd, data []byte) error {
 		return fmt.Errorf("No callback found for command %q", hyper.CmdToString(cmd))
 	}
 
+	// XXX: Do not change the format of these two log calls: they are used by the
+	// XXX: tests!
 	agentLog.Infof("%s", hyper.CmdToString(cmd)+"_start")
 
 	cbErr := cb(p, data)
@@ -938,7 +997,7 @@ func startPodCb(pod *pod, data []byte) error {
 
 func destroyPodCb(pod *pod, data []byte) error {
 	if pod.running == false {
-		agentLog.Infof("Pod not started, this is a no-op")
+		agentLog.WithField("pod", pod.id).Info("Pod not started, this is a no-op")
 		return nil
 	}
 
@@ -1370,7 +1429,10 @@ func (c *agentConfig) getConfig(cmdLineFile string) error {
 	for _, w := range words {
 		word := string(w)
 		if err := c.parseCmdlineOption(word); err != nil {
-			agentLog.Warnf("Failed to parse kernel option %s: %v", word, err)
+			agentLog.WithFields(logrus.Fields{
+				"error":  err,
+				"option": word,
+			}).Warn("Failed to parse kernel option")
 		}
 	}
 	return nil
