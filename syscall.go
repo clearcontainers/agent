@@ -24,6 +24,7 @@ import (
 	"time"
 
 	goudev "github.com/jochenvg/go-udev"
+	"github.com/sirupsen/logrus"
 )
 
 const mountPerm = os.FileMode(0755)
@@ -141,17 +142,24 @@ func waitForBlockDevice(deviceName string) error {
 	ch, _ := monitor.DeviceChan(done)
 
 	go func() {
-		agentLog.Infof("Started listening for udev events for block device hotplug")
+		fieldLogger := agentLog.WithField("device", deviceName)
+
+		fieldLogger.Info("Started listening for udev events for block device hotplug")
 
 		// Check if the device already exists.
 		if _, err := os.Stat(devicePath); err == nil {
-			agentLog.Infof("Device %s already hotplugged, quit listening", deviceName)
+			fieldLogger.Info("Device already hotplugged, quit listening")
 		} else {
 
 			for d := range ch {
-				agentLog.Infof("Event:", d.Syspath(), d.Action())
+				fieldLogger = fieldLogger.WithFields(logrus.Fields{
+					"udev-path":  d.Syspath(),
+					"udev-event": d.Action(),
+				})
+
+				fieldLogger.Info("got udev event")
 				if d.Action() == "add" && filepath.Base(d.Devpath()) == deviceName {
-					agentLog.Infof("Hotplug event received for device %s", deviceName)
+					fieldLogger.Info("Hotplug event received")
 					break
 				}
 			}
