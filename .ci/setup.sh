@@ -22,6 +22,9 @@
 set -e
 set -x
 
+# Retrieve OS information
+source /etc/os-release
+
 script_dir=$(dirname $(readlink -f "$0"))
 source "${script_dir}/ci-common.sh"
 
@@ -37,7 +40,13 @@ export RACE_DETECTION=true
 go get "$test_repo"
 
 # Install libudev-dev required for go-udev vendor dependency
-sudo apt-get install -y libudev-dev
+if [ "$ID" == fedora ]
+then
+	sudo dnf install -y libudev-devel
+elif [ "$ID" == ubuntu ]
+then
+	sudo apt-get install -y libudev-dev
+fi
 
 # Check the commits in the branch
 checkcommits_dir="${test_repo_dir}/cmd/checkcommits"
