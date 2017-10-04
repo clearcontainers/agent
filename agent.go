@@ -41,6 +41,7 @@ import (
 )
 
 const (
+	name               = "cc-agent"
 	virtIOPath         = "/sys/class/virtio-ports"
 	devRootPath        = "/dev"
 	ctlChannelName     = "sh.hyper.channel.0"
@@ -158,7 +159,10 @@ var callbackList = map[hyper.HyperCmd]cmdCb{
 	hyper.WinsizeCmd:         winsizeCb,
 }
 
-var agentLog = logrus.New()
+var agentLog = logrus.WithFields(logrus.Fields{
+	"name": name,
+	"pid":  os.Getpid(),
+})
 
 func init() {
 	if len(os.Args) > 1 && os.Args[1] == "init" {
@@ -177,7 +181,7 @@ var Version = "unknown"
 
 func main() {
 
-	agentLog.Formatter = &logrus.JSONFormatter{TimestampFormat: time.RFC3339Nano}
+	agentLog.Logger.Formatter = &logrus.JSONFormatter{TimestampFormat: time.RFC3339Nano}
 	config := newConfig(defaultLogLevel)
 	if err := config.getConfig(kernelCmdlineFile); err != nil {
 		agentLog.WithField("error", err).Warn("Failed to get config from kernel cmdline")
@@ -646,8 +650,8 @@ func (c *container) closeProcessStreams(pid string) {
 	proc := c.getProcess(pid)
 
 	fieldLogger := agentLog.WithFields(logrus.Fields{
-		"pid":       pid,
-		"container": cid,
+		"container-pid": pid,
+		"container":     cid,
 	})
 
 	if proc == nil {
@@ -707,8 +711,8 @@ func (c *container) closeProcessPipes(pid string) {
 	proc := c.getProcess(pid)
 
 	fieldLogger := agentLog.WithFields(logrus.Fields{
-		"pid":       pid,
-		"container": cid,
+		"container-pid": pid,
+		"container":     cid,
 	})
 
 	if proc == nil {
@@ -801,7 +805,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	proc := ctr.getProcess(pid)
 
-	fieldLogger := agentLog.WithField("pid", pid)
+	fieldLogger := agentLog.WithField("container-pid", pid)
 
 	if err := ctr.container.Run(&(proc.process)); err != nil {
 		fieldLogger.WithField("error", err).Error("Could not run process")
@@ -1439,7 +1443,7 @@ func (c *agentConfig) getConfig(cmdLineFile string) error {
 }
 
 func applyConfig(config agentConfig) {
-	agentLog.SetLevel(config.logLevel)
+	agentLog.Logger.SetLevel(config.logLevel)
 }
 
 //Parse a string that represents a kernel cmdline option
