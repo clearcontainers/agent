@@ -2,6 +2,7 @@
 Description=Clear Containers Agent Target
 Requires=basic.target
 Requires=clear-containers.service
+Wants=clr-power.service
 Conflicts=rescue.service rescue.target
 After=basic.target rescue.service rescue.target
 AllowIsolate=yes
