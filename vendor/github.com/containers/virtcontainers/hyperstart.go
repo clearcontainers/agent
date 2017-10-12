@@ -27,7 +27,7 @@ import (
 	"github.com/containers/virtcontainers/pkg/hyperstart"
 )
 
-var defaultSockPathTemplates = []string{"/tmp/hyper-pod-%s.sock", "/tmp/tty-pod%s.sock"}
+var defaultSockPathTemplates = []string{"%s/%s/hyper.sock", "%s/%s/tty.sock"}
 var defaultChannelTemplate = "sh.hyper.channel.%d"
 var defaultDeviceIDTemplate = "channel%d"
 var defaultIDTemplate = "charch%d"
@@ -58,8 +58,8 @@ func (c *HyperConfig) validate(pod Pod) bool {
 		virtLog.Infof("No sockets from configuration")
 
 		podSocketPaths := []string{
-			fmt.Sprintf(defaultSockPathTemplates[0], pod.id),
-			fmt.Sprintf(defaultSockPathTemplates[1], pod.id),
+			fmt.Sprintf(defaultSockPathTemplates[0], runStoragePath, pod.id),
+			fmt.Sprintf(defaultSockPathTemplates[1], runStoragePath, pod.id),
 		}
 
 		c.SockCtlName = podSocketPaths[0]
@@ -84,7 +84,7 @@ func (c *HyperConfig) validate(pod Pod) bool {
 		c.PauseBinPath = filepath.Join(defaultPauseBinDir, pauseBinName)
 	}
 
-	virtLog.Infof("Hyperstart config %v", c)
+	virtLog.Debugf("Hyperstart config %v", c)
 
 	return true
 }
@@ -114,10 +114,13 @@ func (h *hyper) buildHyperContainerProcess(cmd Cmd) (*hyperstart.Process, error)
 	}
 
 	process := &hyperstart.Process{
-		Terminal: cmd.Interactive,
-		Args:     cmd.Args,
-		Envs:     envVars,
-		Workdir:  cmd.WorkDir,
+		Terminal:         cmd.Interactive,
+		Args:             cmd.Args,
+		Envs:             envVars,
+		Workdir:          cmd.WorkDir,
+		User:             cmd.User,
+		Group:            cmd.PrimaryGroup,
+		AdditionalGroups: cmd.SupplementaryGroups,
 	}
 
 	return process, nil
@@ -425,7 +428,7 @@ func (h *hyper) startPod(pod Pod) error {
 		return err
 	}
 
-	hostname := pod.id
+	hostname := pod.config.Hostname
 	if len(hostname) > maxHostnameLen {
 		hostname = hostname[:maxHostnameLen]
 	}
@@ -449,12 +452,6 @@ func (h *hyper) startPod(pod Pod) error {
 
 	if err := h.startPauseContainer(pod.id); err != nil {
 		return err
-	}
-
-	for _, c := range pod.containers {
-		if err := h.startOneContainer(pod, *c); err != nil {
-			return err
-		}
 	}
 
 	return nil
