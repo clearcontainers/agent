@@ -1,4 +1,4 @@
-// +build linux
+// +build linux,!static_build
 
 package systemd
 
@@ -260,7 +260,7 @@ func (m *Manager) Apply(pid int) error {
 
 	if c.Resources.Memory != 0 {
 		properties = append(properties,
-			newProp("MemoryLimit", c.Resources.Memory))
+			newProp("MemoryLimit", uint64(c.Resources.Memory)))
 	}
 
 	if c.Resources.CpuShares != 0 {

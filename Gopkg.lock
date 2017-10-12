@@ -2,22 +2,16 @@
 
 
 [[projects]]
-  name = "github.com/Microsoft/go-winio"
-  packages = ["."]
-  revision = "7ff89941bcb93df2e962467fb073c6e997b13cf0"
-  version = "v0.4.4"
-
-[[projects]]
   branch = "master"
-  name = "github.com/Sirupsen/logrus"
+  name = "github.com/containerd/console"
   packages = ["."]
-  revision = "181d419aa9e2223811b824e8f0b4af96f9ba9302"
+  revision = "84eeaae905fa414d03e07bcd6c8d3f19e7cf180e"
 
 [[projects]]
   branch = "master"
   name = "github.com/containers/virtcontainers"
   packages = ["pkg/hyperstart"]
-  revision = "7f40a7cc76b6ae65ba4835a2777ddffd2ce496c7"
+  revision = "0abfabe1aa20c67ee7fce0ad92c2b0ea1fb65196"
 
 [[projects]]
   name = "github.com/coreos/go-systemd"
@@ -34,8 +28,8 @@
 [[projects]]
   name = "github.com/docker/docker"
   packages = ["pkg/longpath","pkg/mount","pkg/symlink","pkg/system"]
-  revision = "092cba3727bb9b4a2f0e922cd6c0f93ea270e363"
-  version = "v1.13.1"
+  revision = "b9f10c951893f9a00865890a5232e85d770c1087"
+  version = "v1.11.2"
 
 [[projects]]
   name = "github.com/docker/go-units"
@@ -82,8 +76,8 @@
 [[projects]]
   branch = "master"
   name = "github.com/opencontainers/runc"
-  packages = ["libcontainer","libcontainer/apparmor","libcontainer/cgroups","libcontainer/cgroups/fs","libcontainer/cgroups/rootless","libcontainer/cgroups/systemd","libcontainer/configs","libcontainer/configs/validate","libcontainer/criurpc","libcontainer/keys","libcontainer/nsenter","libcontainer/seccomp","libcontainer/stacktrace","libcontainer/system","libcontainer/user","libcontainer/utils"]
-  revision = "ae2948042b08ad3d6d13cd09f40a50ffff4fc688"
+  packages = ["libcontainer","libcontainer/apparmor","libcontainer/cgroups","libcontainer/cgroups/fs","libcontainer/cgroups/rootless","libcontainer/cgroups/systemd","libcontainer/configs","libcontainer/configs/validate","libcontainer/criurpc","libcontainer/intelrdt","libcontainer/keys","libcontainer/nsenter","libcontainer/seccomp","libcontainer/stacktrace","libcontainer/system","libcontainer/user","libcontainer/utils"]
+  revision = "7c7d38bfe8b1a70dca1582bcd8ca91fc26cb9904"
 
 [[projects]]
   name = "github.com/opencontainers/runtime-spec"
@@ -98,16 +92,22 @@
   version = "v1.0.0-rc1"
 
 [[projects]]
+  name = "github.com/pkg/errors"
+  packages = ["."]
+  revision = "645ef00459ed84a119197bfb8d8205042c6df63d"
+  version = "v0.8.0"
+
+[[projects]]
   name = "github.com/seccomp/libseccomp-golang"
   packages = ["."]
   revision = "e3496e3a417d1dc9ecdceca5af2513271fed37a0"
   version = "v0.9.0"
 
 [[projects]]
+  branch = "master"
   name = "github.com/sirupsen/logrus"
   packages = ["."]
-  revision = "a3f95b5c423586578a4e099b11a46c2479628cac"
-  version = "1.0.2"
+  revision = "89742aefa4b206dcf400792f3bd35b542998eb3b"
 
 [[projects]]
   branch = "master"

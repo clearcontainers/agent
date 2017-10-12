@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 // Control command IDs
@@ -439,7 +439,7 @@ func (h *Hyperstart) CodeFromCmd(cmd string) (uint32, error) {
 func (h *Hyperstart) CheckReturnedCode(recvCode, expectedCode uint32) error {
 	if recvCode != expectedCode {
 		if recvCode == ErrorCode {
-			return fmt.Errorf("ERROR received from Hyperstart")
+			return fmt.Errorf("ERROR received from VM agent")
 		}
 
 		return fmt.Errorf("CMD ID received %d not matching expected %d", recvCode, expectedCode)

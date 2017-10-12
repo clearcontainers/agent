@@ -17,7 +17,10 @@
 package virtcontainers
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +33,11 @@ const (
 
 	// MockHypervisor is a mock hypervisor for testing purposes
 	MockHypervisor HypervisorType = "mock"
+)
+
+const (
+	procMemInfo = "/proc/meminfo"
+	procCPUInfo = "/proc/cpuinfo"
 )
 
 const (
@@ -62,6 +70,9 @@ const (
 
 	// SerialPortDev is the serial port device type.
 	serialPortDev
+
+	// VFIODevice is VFIO device type
+	vfioDev
 )
 
 // Set sets an hypervisor type based on the input string.
@@ -116,6 +127,12 @@ type HypervisorConfig struct {
 	// ImagePath is the guest image host path.
 	ImagePath string
 
+	// FirmwarePath is the bios host path
+	FirmwarePath string
+
+	// MachineAccelerators are machine specific accelerators
+	MachineAccelerators string
+
 	// HypervisorPath is the hypervisor executable host path.
 	HypervisorPath string
 
@@ -143,6 +160,24 @@ type HypervisorConfig struct {
 	// DefaultMem specifies default memory size in MiB for the VM.
 	// Pod configuration VMConfig.Memory overwrites this.
 	DefaultMemSz uint32
+
+	// MemPrealloc specifies if the memory should be pre-allocated
+	MemPrealloc bool
+
+	// HugePages specifies if the memory should be pre-allocated from huge pages
+	HugePages bool
+
+	// Realtime Used to enable/disable realtime
+	Realtime bool
+
+	// Mlock is used to control memory locking when Realtime is enabled
+	// Realtime=true and Mlock=false, allows for swapping out of VM memory
+	// enabling higher density
+	Mlock bool
+
+	// DisableNestingChecks is used to override customizations performed
+	// when running on top of another VMM.
+	DisableNestingChecks bool
 }
 
 func (conf *HypervisorConfig) valid() (bool, error) {
@@ -222,6 +257,81 @@ func DeserializeParams(parameters []string) []Param {
 	return params
 }
 
+func getHostMemorySizeKb(memInfoPath string) (uint64, error) {
+	f, err := os.Open(memInfoPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		// Expected format: ["MemTotal:", "1234", "kB"]
+		parts := strings.Fields(scanner.Text())
+
+		// Sanity checks: Skip malformed entries.
+		if len(parts) < 3 || parts[0] != "MemTotal:" || parts[2] != "kB" {
+			continue
+		}
+
+		sizeKb, err := strconv.ParseUint(parts[1], 0, 64)
+		if err != nil {
+			continue
+		}
+
+		return sizeKb, nil
+	}
+
+	// Handle errors that may have occurred during the reading of the file.
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+
+	return 0, fmt.Errorf("unable get MemTotal from %s", memInfoPath)
+}
+
+// RunningOnVMM checks if the system is running inside a VM.
+func RunningOnVMM(cpuInfoPath string) (bool, error) {
+	flagsField := "flags"
+
+	f, err := os.Open(cpuInfoPath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		// Expected format: ["flags", ":", ...] or ["flags:", ...]
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 {
+			continue
+		}
+
+		if !strings.HasPrefix(fields[0], flagsField) {
+			continue
+		}
+
+		for _, field := range fields[1:] {
+			if field == "hypervisor" {
+				return true, nil
+			}
+		}
+
+		// As long as we have been able to analyze the fields from
+		// "flags", there is no reason to check what comes next from
+		// /proc/cpuinfo, because we already know we are not running
+		// on a VMM.
+		return false, nil
+	}
+
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+
+	return false, fmt.Errorf("Couldn't find %q from %q output", flagsField, cpuInfoPath)
+}
+
 // hypervisor is the virtcontainers hypervisor interface.
 // The default hypervisor implementation is Qemu.
 type hypervisor interface {
@@ -232,5 +342,8 @@ type hypervisor interface {
 	pausePod() error
 	resumePod() error
 	addDevice(devInfo interface{}, devType deviceType) error
+	hotplugAddDevice(devInfo interface{}, devType deviceType) error
+	hotplugRemoveDevice(devInfo interface{}, devType deviceType) error
 	getPodConsole(podID string) string
+	capabilities() capabilities
 }

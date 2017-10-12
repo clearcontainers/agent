@@ -1213,9 +1213,19 @@ func killContainerCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Container %s not found, impossible to signal", payload.ID)
 	}
 
-	// Use AllProcesses to make sure we carry forward the flag passed by the runtime.
-	if err := ctr.container.Signal(payload.Signal, payload.AllProcesses); err != nil {
-		return err
+	signalled := make(chan error)
+	go func() {
+		// Use AllProcesses to make sure we carry forward the flag passed by the runtime.
+		signalled <- ctr.container.Signal(payload.Signal, payload.AllProcesses)
+	}()
+
+	select {
+	case err := <-signalled:
+		if err != nil {
+			return fmt.Errorf("Process could not be signalled: %v", err)
+		}
+	case <-time.After(time.Duration(15) * time.Second):
+		return fmt.Errorf("Process could not be signalled: timeout error")
 	}
 
 	return nil
