@@ -1030,8 +1030,14 @@ func destroyPodCb(pod *pod, data []byte) error {
 
 func addMounts(config *configs.Config, fsmaps []hyper.Fsmap) error {
 	for _, fsmap := range fsmaps {
+
+		source := fsmap.Source
+		if !fsmap.AbsolutePath {
+			source = filepath.Join(mountShareDirDest, fsmap.Source)
+		}
+
 		newMount := &configs.Mount{
-			Source:      filepath.Join(mountShareDirDest, fsmap.Source),
+			Source:      source,
 			Destination: fsmap.Path,
 			Device:      "bind",
 			Flags:       syscall.MS_BIND | syscall.MS_REC,
