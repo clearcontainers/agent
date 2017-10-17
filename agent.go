@@ -184,14 +184,14 @@ func main() {
 	agentLog.Logger.Formatter = &logrus.JSONFormatter{TimestampFormat: time.RFC3339Nano}
 	config := newConfig(defaultLogLevel)
 	if err := config.getConfig(kernelCmdlineFile); err != nil {
-		agentLog.WithField("error", err).Warn("Failed to get config from kernel cmdline")
+		agentLog.WithError(err).Warn("Failed to get config from kernel cmdline")
 	}
 	applyConfig(config)
 
 	agentLog.WithField("version", Version).Info()
 
 	if uptime, err := newEventTime(agentStartedEvent); err != nil {
-		agentLog.WithField("error", err).Error("Failed to get uptime")
+		agentLog.WithError(err).Error("Failed to get uptime")
 	} else {
 		agentLog.Infof("%s", uptime)
 	}
@@ -209,14 +209,14 @@ func main() {
 
 	// Open serial ports and write on both CTL and TTY channels
 	if err := pod.openChannels(); err != nil {
-		agentLog.WithField("error", err).Error("Could not open channels")
+		agentLog.WithError(err).Error("Could not open channels")
 		return
 	}
 	defer pod.closeChannels()
 
 	// Setup users and groups
 	if err := pod.setupUsersAndGroups(); err != nil {
-		agentLog.WithField("error", err).Error("Could not setup users and groups")
+		agentLog.WithError(err).Error("Could not setup users and groups")
 		return
 	}
 
@@ -276,7 +276,7 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 				continue
 			}
 
-			fieldLogger.WithField("error", err).Errorf("Read failed")
+			fieldLogger.WithError(err).Errorf("Read failed")
 			break
 		}
 
@@ -285,12 +285,12 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 		fieldLogger.Info("Received command")
 
 		if err := p.runCmd(cmd, data); err != nil {
-			fieldLogger.WithField("error", err).Info("command failed")
+			fieldLogger.WithError(err).Info("command failed")
 			reply = hyper.ErrorCmd
 		}
 
 		if err := p.sendCmd(reply, []byte{}); err != nil {
-			fieldLogger.WithField("error", err).Info("reply send failed")
+			fieldLogger.WithError(err).Info("reply send failed")
 			break
 		}
 
@@ -316,7 +316,7 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 				continue
 			}
 
-			fieldLogger.WithField("error", err).Info("Read failed")
+			fieldLogger.WithError(err).Info("Read failed")
 			break
 		}
 
@@ -355,7 +355,7 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 
 		n, err := file.Write(data)
 		if err != nil {
-			fieldLogger.WithField("error", err).Error("Write to process failed")
+			fieldLogger.WithError(err).Error("Write to process failed")
 		}
 
 		fieldLogger.WithFields(logrus.Fields{
@@ -763,7 +763,7 @@ func (p *pod) routeOutput(seq uint64, stream *os.File, wg *sync.WaitGroup) {
 
 		n, err := stream.Read(buf)
 		if err != nil {
-			fieldLogger.WithField("error", err).Info("Sequence has been closed")
+			fieldLogger.WithError(err).Info("Sequence has been closed")
 			break
 		}
 
@@ -808,7 +808,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	fieldLogger := agentLog.WithField("container-pid", pid)
 
 	if err := ctr.container.Run(&(proc.process)); err != nil {
-		fieldLogger.WithField("error", err).Error("Could not run process")
+		fieldLogger.WithError(err).Error("Could not run process")
 		started <- err
 		return err
 	}
@@ -849,7 +849,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	processState, err := proc.process.Wait()
 	if err != nil {
-		fieldLogger.WithField("error", err).Error("Process wait failed")
+		fieldLogger.WithError(err).Error("Process wait failed")
 	}
 
 	// Close pipes to terminate routeOutput() go routines.
