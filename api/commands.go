@@ -105,6 +105,7 @@ type EnvironmentVar struct {
 type Fsmap struct {
 	Source       string `json:"source"`
 	Path         string `json:"path"`
+	AbsolutePath bool   `json:"absolutePath"`
 	ReadOnly     bool   `json:"readOnly"`
 	DockerVolume bool   `json:"dockerVolume"`
 }
