@@ -65,6 +65,8 @@ const (
 	logLevelFlag       = optionPrefix + "log"
 	defaultLogLevel    = logrus.InfoLevel
 	cannotGetTimeMsg   = "Failed to get time for event %s:%v"
+	pciBusRescanFile   = "/sys/bus/pci/rescan"
+	pciBusMode         = 0220
 )
 
 var capsList = []string{
@@ -1059,6 +1061,12 @@ func addMounts(config *configs.Config, fsmaps []hyper.Fsmap) error {
 
 func newContainerCb(pod *pod, data []byte) error {
 	var payload hyper.NewContainer
+
+	// re-scan PCI bus
+	// looking for hidden devices
+	if err := ioutil.WriteFile(pciBusRescanFile, []byte("1"), pciBusMode); err != nil {
+		agentLog.WithError(err).Warnf("Could not rescan PCI bus")
+	}
 
 	if pod.running == false {
 		return fmt.Errorf("Pod not started, impossible to run a new container")
