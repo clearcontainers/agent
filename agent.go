@@ -1226,9 +1226,17 @@ func killContainerCb(pod *pod, data []byte) error {
 	}
 
 	ctr := pod.getContainer(payload.ID)
-
 	if ctr == nil {
 		return fmt.Errorf("Container %s not found, impossible to signal", payload.ID)
+	}
+
+	status, err := ctr.container.Status()
+	if err != nil {
+		return err
+	}
+	if status == libcontainer.Stopped {
+		agentLog.Info("Container %s is Stopped on pod %s, discard signal %s", payload.ID, pod.id, payload.Signal.String())
+		return nil
 	}
 
 	signalled := make(chan error)
@@ -1362,7 +1370,7 @@ func pingCb(pod *pod, data []byte) error {
 	return nil
 }
 
-func (p *pod) findTermFromSeqID(seqID uint64) (*os.File, string, error) {
+func (p *pod) findTermFromSeqID(seqID uint64) (*os.File, string) {
 	p.containersLock.RLock()
 	defer p.containersLock.RUnlock()
 
@@ -1372,13 +1380,13 @@ func (p *pod) findTermFromSeqID(seqID uint64) (*os.File, string, error) {
 		for _, process := range container.processes {
 			if process.seqStdio == seqID {
 				container.processesLock.RUnlock()
-				return process.termMaster, cid, nil
+				return process.termMaster, cid
 			}
 		}
 		container.processesLock.RUnlock()
 	}
 
-	return nil, "", fmt.Errorf("Could not find a process related to sequence %d", seqID)
+	return nil, ""
 }
 
 func winsizeCb(pod *pod, data []byte) error {
@@ -1392,20 +1400,26 @@ func winsizeCb(pod *pod, data []byte) error {
 		return err
 	}
 
-	term, cid, err := pod.findTermFromSeqID(payload.Sequence)
-	if err != nil {
-		return err
+	term, cid := pod.findTermFromSeqID(payload.Sequence)
+	if cid == "" {
+		// The sequence ID could be not found in case the process returned
+		// and the process has been removed from the container map.
+		// We should not error in that case, and discard the received signal.
+		agentLog.Warnf("Could not find sequence ID %d on pod %s, discard SIGWINCH", payload.Sequence, pod.id)
+		return nil
 	}
 
 	ctr := pod.getContainer(cid)
 	status, err := ctr.container.Status()
-
 	if err != nil {
 		return err
 	}
 
-	if status != libcontainer.Running {
-		return fmt.Errorf("Container %s not running, impossible to resize window", cid)
+	if status == libcontainer.Stopped {
+		agentLog.Info("Container %s is Stopped on pod %s, discard SIGWINCH", cid, pod.id)
+		return nil
+	} else if status != libcontainer.Running {
+		return fmt.Errorf("Container %s %s, impossible to resize window", cid, status.String())
 	}
 
 	window := new(struct {
