@@ -67,6 +67,10 @@ const (
 	cannotGetTimeMsg   = "Failed to get time for event %s:%v"
 	pciBusRescanFile   = "/sys/bus/pci/rescan"
 	pciBusMode         = 0220
+	// If a process terminates because of signal "n"
+	// The exit code is "128 + signal_number"
+	// http://tldp.org/LDP/abs/html/exitcodes.html
+	exitSigalOffset = 128
 )
 
 var capsList = []string{
@@ -870,9 +874,19 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 		fieldLogger.Info("Got process state")
 
 		if waitStatus, ok := processState.Sys().(syscall.WaitStatus); ok {
-			exitCode = uint8(waitStatus.ExitStatus())
-			fieldLogger.WithField("exit-code", exitCode).Info("got wait exit code")
+			exitStatus := waitStatus.ExitStatus()
+
+			if waitStatus.Signaled() {
+				exitCode = uint8(exitSigalOffset + waitStatus.Signal())
+				fieldLogger.WithField("exit-code", exitCode).Info("process was signaled")
+			} else {
+				exitCode = uint8(exitStatus)
+				fieldLogger.WithField("exit-code", exitCode).Info("got wait exit code")
+			}
 		}
+
+	} else {
+		fieldLogger.Error("Process state is nil could not get process exit code")
 	}
 
 	// Send exit code through tty channel
