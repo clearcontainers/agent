@@ -23,6 +23,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -854,10 +855,10 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	started <- nil
 
 	processState, err := proc.process.Wait()
-	if err != nil {
+	// Ignore error if process fails because of an unsuccessful exit code
+	if _, ok := err.(*exec.ExitError); err != nil && !ok {
 		fieldLogger.WithError(err).Error("Process wait failed")
 	}
-
 	// Close pipes to terminate routeOutput() go routines.
 	ctr.closeProcessPipes(pid)
 
