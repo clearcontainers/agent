@@ -68,10 +68,16 @@ const (
 	cannotGetTimeMsg   = "Failed to get time for event %s:%v"
 	pciBusRescanFile   = "/sys/bus/pci/rescan"
 	pciBusMode         = 0220
+
 	// If a process terminates because of signal "n"
 	// The exit code is "128 + signal_number"
 	// http://tldp.org/LDP/abs/html/exitcodes.html
 	exitSigalOffset = 128
+
+	// Timeouts
+	defaultTimeout     = 15
+	runProcessTimeout  = defaultTimeout
+	killProcessTimeout = defaultTimeout
 )
 
 var capsList = []string{
@@ -1222,7 +1228,7 @@ func newContainerCb(pod *pod, data []byte) error {
 		if err != nil {
 			return fmt.Errorf("Process could not be started: %v", err)
 		}
-	case <-time.After(time.Duration(5) * time.Second):
+	case <-time.After(time.Duration(runProcessTimeout) * time.Second):
 		return fmt.Errorf("Process could not be started: timeout error")
 	}
 
@@ -1265,7 +1271,7 @@ func killContainerCb(pod *pod, data []byte) error {
 		if err != nil {
 			return fmt.Errorf("Process could not be signalled: %v", err)
 		}
-	case <-time.After(time.Duration(15) * time.Second):
+	case <-time.After(time.Duration(killProcessTimeout) * time.Second):
 		return fmt.Errorf("Process could not be signalled: timeout error")
 	}
 
@@ -1370,7 +1376,7 @@ func execCb(pod *pod, data []byte) error {
 		if err != nil {
 			return fmt.Errorf("Process could not be started: %v", err)
 		}
-	case <-time.After(time.Duration(5) * time.Second):
+	case <-time.After(time.Duration(runProcessTimeout) * time.Second):
 		return fmt.Errorf("Process could not be started: timeout error")
 	}
 
