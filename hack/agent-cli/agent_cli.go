@@ -233,20 +233,21 @@ func monitorStdInLoop(h *hyperstart.Hyperstart, done chan<- bool) error {
 		}
 	}
 
-	done <- true
+	close(done)
+
 	return nil
 }
 
 func monitorTtyOutLoop(h *hyperstart.Hyperstart, done chan<- bool) error {
 	for {
-		msgCh := make(chan *hyperstart.TtyMessage, 1)
-		errorCh := make(chan bool, 1)
+		msgCh := make(chan *hyperstart.TtyMessage)
+		errorCh := make(chan bool)
 
 		go func() {
 			msg, err := h.ReadIoMessage()
 			if err != nil {
 				magicLog("%s\n", err)
-				errorCh <- true
+				close(errorCh)
 				return
 			}
 
@@ -257,7 +258,7 @@ func monitorTtyOutLoop(h *hyperstart.Hyperstart, done chan<- bool) error {
 		case msg := <-msgCh:
 			dumpFrame(*msg)
 		case <-errorCh:
-			done <- true
+			close(done)
 			break
 		}
 	}
@@ -282,7 +283,7 @@ func mainLoop(c *cli.Context) error {
 		return err
 	}
 
-	done := make(chan bool, 1)
+	done := make(chan bool)
 
 	go monitorStdInLoop(h, done)
 	go monitorTtyOutLoop(h, done)
