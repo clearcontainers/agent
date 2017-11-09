@@ -6,7 +6,7 @@
 # The version should be bumped and the '+' sign removed just before tagging a
 # new release.
 # A '+' sign should be added in the commit just after tagging a new release.
-VERSION := 0.1.0-alpha.0+
+VERSION := 0.1.1+
 SOURCES := $(shell find . 2>&1 | grep -E '.*\.(c|h|go)$$')
 MKDIR = $(dir $(lastword $(MAKEFILE_LIST)))
 
