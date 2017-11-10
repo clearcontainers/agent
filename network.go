@@ -154,13 +154,19 @@ func setupInterfaces(netHandle *netlink.Handle, ifaces []hyper.NetIface) error {
 	return nil
 }
 
-func setupRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
+func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 	initRouteList, err := netHandle.RouteList(nil, netlink.FAMILY_ALL)
 	if err != nil {
 		return err
 	}
 
-	for _, route := range routes {
+	var finalRouteList []hyper.Route
+	defer func() {
+		// Update the route list.
+		*routes = finalRouteList
+	}()
+
+	for _, route := range *routes {
 		var dst *net.IPNet
 		var err error
 
@@ -209,6 +215,11 @@ func setupRoutes(netHandle *netlink.Handle, routes []hyper.Route) error {
 			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %v",
 				route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
+
+		// Only save the routes that we are actually adding. Don't add
+		// skipped routes already existing, otherwise it could cause
+		// issues when trying to remove them.
+		finalRouteList = append(finalRouteList, route)
 	}
 
 	return nil
@@ -239,7 +250,7 @@ func (p *pod) setupNetwork() error {
 		return fmt.Errorf("Could not setup network interfaces: %v", err)
 	}
 
-	if err := setupRoutes(netHandle, p.network.Routes); err != nil {
+	if err := setupRoutes(netHandle, &p.network.Routes); err != nil {
 		return fmt.Errorf("Could not setup network routes: %v", err)
 	}
 
