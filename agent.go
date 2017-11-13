@@ -306,10 +306,6 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 			fieldLogger.WithError(err).Info("reply send failed")
 			break
 		}
-
-		if cmd == hyper.DestroyPodCmd {
-			break
-		}
 	}
 
 out:
