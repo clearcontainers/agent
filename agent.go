@@ -331,7 +331,7 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 
 		fieldLogger.Info("Read from channel")
 
-		if seq == uint64(0) || data == nil {
+		if seq == uint64(0) {
 			continue
 		}
 
@@ -359,6 +359,13 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 		}
 
 		p.stdinLock.Unlock()
+
+		if len(data) == 0 {
+			fieldLogger.Info("EOF detected, closing stdin")
+			p.unregisterStdin(seq)
+			file.Close()
+			continue
+		}
 
 		fieldLogger.Info("Sequence found, writing data")
 
@@ -555,7 +562,7 @@ func (p *pod) readTty() (uint64, []byte, error) {
 	length := int(binary.BigEndian.Uint32(buf[8:ttyHeaderSize]))
 	length -= ttyHeaderSize
 	if length == 0 {
-		return seq, nil, nil
+		return seq, []byte{}, nil
 	}
 
 	data := make([]byte, length)
