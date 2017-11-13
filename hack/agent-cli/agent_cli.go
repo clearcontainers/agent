@@ -233,20 +233,21 @@ func monitorStdInLoop(h *hyperstart.Hyperstart, done chan<- bool) error {
 		}
 	}
 
-	done <- true
+	close(done)
+
 	return nil
 }
 
 func monitorTtyOutLoop(h *hyperstart.Hyperstart, done chan<- bool) error {
 	for {
-		msgCh := make(chan *hyperstart.TtyMessage, 1)
-		errorCh := make(chan bool, 1)
+		msgCh := make(chan *hyperstart.TtyMessage)
+		errorCh := make(chan bool)
 
 		go func() {
 			msg, err := h.ReadIoMessage()
 			if err != nil {
 				magicLog("%s\n", err)
-				errorCh <- true
+				close(errorCh)
 				return
 			}
 
@@ -257,7 +258,7 @@ func monitorTtyOutLoop(h *hyperstart.Hyperstart, done chan<- bool) error {
 		case msg := <-msgCh:
 			dumpFrame(*msg)
 		case <-errorCh:
-			done <- true
+			close(done)
 			break
 		}
 	}
@@ -266,6 +267,7 @@ func monitorTtyOutLoop(h *hyperstart.Hyperstart, done chan<- bool) error {
 func mainLoop(c *cli.Context) error {
 	ctlSockPath := c.String("ctl")
 	ttySockPath := c.String("tty")
+	waitForReady := c.Bool("wait-for-ready")
 
 	if ctlSockPath == "" || ttySockPath == "" {
 		return fmt.Errorf("Missing socket path: please provide CTL and TTY socket paths")
@@ -278,11 +280,13 @@ func mainLoop(c *cli.Context) error {
 	}
 	defer h.CloseSockets()
 
-	if err := h.WaitForReady(); err != nil {
-		return err
+	if waitForReady {
+		if err := h.WaitForReady(); err != nil {
+			return err
+		}
 	}
 
-	done := make(chan bool, 1)
+	done := make(chan bool)
 
 	go monitorStdInLoop(h, done)
 	go monitorTtyOutLoop(h, done)
@@ -312,6 +316,10 @@ func main() {
 					Name:  "tty",
 					Value: "",
 					Usage: "the TTY socket path",
+				},
+				cli.BoolFlag{
+					Name:  "wait-for-ready",
+					Usage: "boolean flag to wait for READY message first",
 				},
 			},
 			Action: func(context *cli.Context) error {

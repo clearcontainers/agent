@@ -32,8 +32,10 @@ cc-agent
 
 From a different shell on the host (as root):
 ```
-# ./agent-cli run --ctl=/tmp/hyper.sock --tty=/tmp/tty.sock
+# ./agent-cli run --ctl=/tmp/hyper.sock --tty=/tmp/tty.sock --wait-for-ready
 ```
+
+Do not use the `--wait-for-ready` flag when the `agent-cli` is terminated or disconnected from the `CTL` and `TTY` sockets and the agent is still listening on those sockets. In this case, the agent will not send a `READY` message.
 
 ## Usage
 
