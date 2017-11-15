@@ -151,11 +151,16 @@ type pod struct {
 	containers     map[string]*container
 	ctl            *os.File
 	tty            *os.File
-	stdinList      map[uint64]*os.File
+	stdinList      map[uint64]stdinInfo
 	network        hyper.Network
 	stdinLock      sync.Mutex
 	ttyLock        sync.Mutex
 	containersLock sync.RWMutex
+}
+
+type stdinInfo struct {
+	stdin *os.File
+	term  bool
 }
 
 type cmdCb func(*pod, []byte) error
@@ -217,7 +222,7 @@ func main() {
 	pod := &pod{
 		containers: make(map[string]*container),
 		running:    false,
-		stdinList:  make(map[uint64]*os.File),
+		stdinList:  make(map[uint64]stdinInfo),
 	}
 
 	// Open serial ports and write on both CTL and TTY channels
@@ -351,7 +356,7 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 
 		fieldLogger = fieldLogger.WithField("stream", "stdin")
 
-		file, exist := p.stdinList[seq]
+		info, exist := p.stdinList[seq]
 		if !exist {
 			fieldLogger.Info("Sequence not found")
 			p.stdinLock.Unlock()
@@ -360,16 +365,16 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 
 		p.stdinLock.Unlock()
 
-		if len(data) == 0 {
-			fieldLogger.Info("EOF detected, closing stdin")
+		if len(data) == 0 && !info.term {
+			fieldLogger.Info("EOF detected, closing stdin for a non terminal")
 			p.unregisterStdin(seq)
-			file.Close()
+			info.stdin.Close()
 			continue
 		}
 
 		fieldLogger.Info("Sequence found, writing data")
 
-		n, err := file.Write(data)
+		n, err := info.stdin.Write(data)
 		if err != nil {
 			fieldLogger.WithError(err).Error("Write to process failed")
 		}
@@ -383,7 +388,7 @@ func (p *pod) streamsLoop(wg *sync.WaitGroup) {
 	wg.Done()
 }
 
-func (p *pod) registerStdin(seq uint64, stdin *os.File) error {
+func (p *pod) registerStdin(seq uint64, stdin *os.File, term bool) error {
 	p.stdinLock.Lock()
 	defer p.stdinLock.Unlock()
 
@@ -391,7 +396,10 @@ func (p *pod) registerStdin(seq uint64, stdin *os.File) error {
 		return fmt.Errorf("Sequence number %d already registered", seq)
 	}
 
-	p.stdinList[seq] = stdin
+	p.stdinList[seq] = stdinInfo{
+		stdin: stdin,
+		term:  term,
+	}
 
 	return nil
 }
@@ -841,7 +849,7 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 		proc.termMaster = termMaster
 
-		if err := p.registerStdin(proc.seqStdio, termMaster); err != nil {
+		if err := p.registerStdin(proc.seqStdio, termMaster, true); err != nil {
 			return err
 		}
 
@@ -921,7 +929,7 @@ func (p *pod) buildProcessWithoutTerminal(proc *process) (*process, error) {
 		return nil, err
 	}
 
-	if err := p.registerStdin(proc.seqStdio, wStdin); err != nil {
+	if err := p.registerStdin(proc.seqStdio, wStdin, false); err != nil {
 		return nil, err
 	}
 
@@ -1052,7 +1060,7 @@ func destroyPodCb(pod *pod, data []byte) error {
 	pod.id = ""
 	pod.containers = make(map[string]*container)
 	pod.running = false
-	pod.stdinList = make(map[uint64]*os.File)
+	pod.stdinList = make(map[uint64]stdinInfo)
 	pod.network = hyper.Network{}
 
 	return nil
