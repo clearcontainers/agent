@@ -1063,6 +1063,10 @@ func destroyPodCb(pod *pod, data []byte) error {
 	pod.stdinList = make(map[uint64]stdinInfo)
 	pod.network = hyper.Network{}
 
+	// Synchronize the caches on the system. This is needed to ensure
+	// there is no pending transactions left before the VM is shut down.
+	syscall.Sync()
+
 	return nil
 }
 
