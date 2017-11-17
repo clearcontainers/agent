@@ -121,6 +121,23 @@ var capsList = []string{
 	"CAP_WAKE_ALARM",
 }
 
+var defaultCapsList = []string{
+	"CAP_CHOWN",
+	"CAP_DAC_OVERRIDE",
+	"CAP_FOWNER",
+	"CAP_FSETID",
+	"CAP_KILL",
+	"CAP_SETGID",
+	"CAP_SETUID",
+	"CAP_SETPCAP",
+	"CAP_NET_BIND_SERVICE",
+	"CAP_NET_RAW",
+	"CAP_SYS_CHROOT",
+	"CAP_MKNOD",
+	"CAP_AUDIT_WRITE",
+	"CAP_SETFCAP",
+}
+
 type agentConfig struct {
 	logLevel logrus.Level
 }
@@ -1130,11 +1147,11 @@ func newContainerCb(pod *pod, data []byte) error {
 	config := configs.Config{
 		Rootfs: absoluteRootFs,
 		Capabilities: &configs.Capabilities{
-			Bounding:    capsList,
-			Effective:   capsList,
-			Inheritable: capsList,
-			Permitted:   capsList,
-			Ambient:     capsList,
+			Bounding:    defaultCapsList,
+			Effective:   defaultCapsList,
+			Inheritable: defaultCapsList,
+			Permitted:   defaultCapsList,
+			Ambient:     defaultCapsList,
 		},
 		Namespaces: configs.Namespaces([]configs.Namespace{
 			{Type: configs.NEWNS},
