@@ -38,7 +38,6 @@ import (
 	_ "github.com/opencontainers/runc/libcontainer/nsenter"
 	"github.com/opencontainers/runc/libcontainer/utils"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -1209,7 +1208,7 @@ func newContainerCb(pod *pod, data []byte) error {
 				Source:      "sysfs",
 				Destination: "/sys",
 				Device:      "sysfs",
-				Flags:       defaultMountFlags | unix.MS_RDONLY,
+				Flags:       defaultMountFlags,
 			},
 		},
 
