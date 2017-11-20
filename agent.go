@@ -783,11 +783,7 @@ func setConsoleCarriageReturn(fd uintptr) error {
 
 	termios.Oflag |= syscall.ONLCR
 
-	if err := ioctl(fd, syscall.TCSETS, uintptr(unsafe.Pointer(&termios))); err != nil {
-		return err
-	}
-
-	return nil
+	return ioctl(fd, syscall.TCSETS, uintptr(unsafe.Pointer(&termios)))
 }
 
 // Executed as go routine to run and wait for the process.
