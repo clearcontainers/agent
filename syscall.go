@@ -219,11 +219,7 @@ func unmountContainerRootFs(containerID, mountingPath string) error {
 		return err
 	}
 
-	if err := os.RemoveAll(containerPath); err != nil {
-		return err
-	}
-
-	return nil
+	return os.RemoveAll(containerPath)
 }
 
 func ioctl(fd uintptr, flag, data uintptr) error {
