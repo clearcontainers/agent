@@ -1230,6 +1230,12 @@ func newContainerCb(pod *pod, data []byte) error {
 				Device:      "sysfs",
 				Flags:       defaultMountFlags,
 			},
+			{
+				Source:      "/dev/vfio",
+				Destination: "/dev/vfio",
+				Device:      "bind",
+				Flags:       syscall.MS_BIND | syscall.MS_REC,
+			},
 		},
 
 		NoNewKeyring:    true,
