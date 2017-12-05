@@ -193,9 +193,12 @@ func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 				route.Dest += "/" + netMask
 			}
 
-			if routeDestExist(linkAttrs.Index, initRouteList, route.Dest) {
-				agentLog.WithField("route-destination", route.Dest).Info("Route destination already exists, skipping")
-				continue
+			existingRoute := findExistingDestRoute(linkAttrs.Index, initRouteList, route.Dest)
+			if existingRoute != nil {
+				agentLog.WithField("route-destination", route.Dest).Info("Route destination already exists, deleting")
+				if err := netHandle.RouteDel(existingRoute); err != nil {
+					return err
+				}
 			}
 
 			_, dst, err = net.ParseCIDR(route.Dest)
@@ -225,14 +228,14 @@ func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 	return nil
 }
 
-func routeDestExist(ifaceIdx int, routeList []netlink.Route, dest string) bool {
+func findExistingDestRoute(ifaceIdx int, routeList []netlink.Route, dest string) *netlink.Route {
 	for _, route := range routeList {
 		if route.LinkIndex == ifaceIdx && route.Dst.String() == dest {
-			return true
+			return &route
 		}
 	}
 
-	return false
+	return nil
 }
 
 func setupDNS(netHandle *netlink.Handle, dns []string) error {
