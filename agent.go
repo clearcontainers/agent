@@ -35,6 +35,7 @@ import (
 	"unsafe"
 
 	hyper "github.com/clearcontainers/agent/api"
+	goudev "github.com/jochenvg/go-udev"
 	"github.com/opencontainers/runc/libcontainer"
 	"github.com/opencontainers/runc/libcontainer/configs"
 	_ "github.com/opencontainers/runc/libcontainer/nsenter"
@@ -155,12 +156,14 @@ type process struct {
 }
 
 type container struct {
-	container     libcontainer.Container
-	config        configs.Config
-	processes     map[string]*process
-	pod           *pod
-	processesLock sync.RWMutex
-	wgProcesses   sync.WaitGroup
+	container       libcontainer.Container
+	config          configs.Config
+	processes       map[string]*process
+	pod             *pod
+	processesLock   sync.RWMutex
+	wgProcesses     sync.WaitGroup
+	deviceNodes     []string
+	deviceNodesLock sync.Mutex
 }
 
 type pod struct {
@@ -205,6 +208,20 @@ var agentLog = logrus.WithFields(logrus.Fields{
 	"name": name,
 	"pid":  os.Getpid(),
 })
+
+// Add kernel subsystems that need to be blacklisted here.
+// These devices will not be mounted within a container.
+var blacklistedDeviceSubsystems = []string{}
+
+func isBlacklistedSubsystem(subsystem string) bool {
+	for _, s := range blacklistedDeviceSubsystems {
+		if subsystem == s {
+			return true
+		}
+	}
+
+	return false
+}
 
 func init() {
 	if len(os.Args) > 1 && os.Args[1] == "init" {
@@ -268,7 +285,14 @@ func main() {
 	// Run TTY loop
 	go pod.streamsLoop(&wgLoops)
 
+	// Create done signal channel for signalling udev epoll loop.
+	done := make(chan struct{})
+
+	// Run loop listening for udev events
+	pod.listenToUdevEvents(done)
+
 	wgLoops.Wait()
+	close(done)
 }
 
 func (p *pod) getContainer(id string) (ctr *container) {
@@ -478,6 +502,81 @@ func (p *pod) closeChannels() {
 		p.tty.Close()
 		p.tty = nil
 	}
+}
+
+// listenToUdevEvents listens to udev events to detect device nodes added
+// and binds the device nodes to the /dev of all the containers.
+// This is required as a container has its /dev mounted with tmpfs with an initial
+// list of devices.
+func (p *pod) listenToUdevEvents(done chan struct{}) {
+	u := goudev.Udev{}
+
+	// Create a monitor listening on a NetLink socket.
+	monitor := u.NewMonitorFromNetlink("udev")
+
+	// Start monitor goroutine.
+	ch, _ := monitor.DeviceChan(done)
+
+	go func() {
+		fieldLogger := agentLog.WithField("subsystem", "udevlistener")
+
+		fieldLogger.Info("Started listening for all udev events")
+
+		for d := range ch {
+			fieldLogger.WithFields(logrus.Fields{
+				"udev-path":  d.Syspath(),
+				"udev-event": d.Action(),
+			}).Info("Received udev event")
+
+			// Ignore udev events for block devices, these are handled by another go-routine in waitForBlockDevice
+			// that mounts block devices at the expected location provided on the command line.
+			if d.Subsystem() == "block" {
+				continue
+			}
+
+			if isBlacklistedSubsystem(d.Subsystem()) {
+				fieldLogger.WithFields(logrus.Fields{
+					"udev-subsystem":  d.Subsystem(),
+					"udev-devicenode": d.Devnode(),
+				}).Info("Device has been blacklisted")
+
+				continue
+			}
+
+			if d.Action() == "add" {
+				// Bind device to /dev within all containers
+				p.bindDeviceNode(d.Devnode())
+			}
+		}
+	}()
+}
+
+func (p *pod) bindDeviceNode(devNode string) {
+	fieldLogger := agentLog.WithField("subsystem", "udevlistener")
+	for _, ctr := range p.containers {
+		fieldLogger.WithFields(logrus.Fields{
+			"devNode": devNode,
+			"ctr":     ctr.container.ID(),
+		}).Info("Bind mounting device to /dev")
+
+		if err := ctr.bindDeviceNode(devNode); err != nil {
+			fieldLogger.WithError(err).Info("Could not bind device")
+		}
+	}
+}
+
+func (c *container) bindDeviceNode(devNode string) error {
+	dest := filepath.Join(c.config.Rootfs, devNode)
+
+	if err := bindMount(devNode, dest, true); err != nil {
+		return err
+	}
+
+	c.deviceNodesLock.Lock()
+	c.deviceNodes = append(c.deviceNodes, dest)
+	c.deviceNodesLock.Unlock()
+
+	return nil
 }
 
 func (p *pod) setupUsersAndGroups() error {
@@ -1352,6 +1451,21 @@ func (c *container) removeContainer(id string) error {
 	c.wgProcesses.Wait()
 
 	if err := c.container.Destroy(); err != nil {
+		return err
+	}
+
+	// Unmount all devices that have been bind-mounted to /dev
+	c.deviceNodesLock.Lock()
+	for _, devNode := range c.deviceNodes {
+		// Ignore error here since the device may already by unmounted
+		// interactively
+		syscall.Unmount(devNode, 0)
+	}
+	c.deviceNodesLock.Unlock()
+
+	// Unmount /dev
+	devPath := filepath.Join(c.config.Rootfs, "/dev")
+	if err := syscall.Unmount(devPath, 0); err != nil {
 		return err
 	}
 
