@@ -1131,6 +1131,21 @@ func addMounts(config *configs.Config, fsmaps []hyper.Fsmap) error {
 	return nil
 }
 
+func mountDevToRootfs(absoluteRootFs string) error {
+	dest := filepath.Join(absoluteRootFs, "/dev")
+	if _, err := os.Stat(dest); os.IsNotExist(err) {
+		if err := os.Mkdir(dest, 755); err != nil {
+			return err
+		}
+	}
+
+	if err := syscall.Mount("tmpfs", dest, "tmpfs", syscall.MS_NOSUID|syscall.MS_STRICTATIME, ""); err != nil {
+		return fmt.Errorf("Could not mount tmpfs to %v: %v", dest, err)
+	}
+
+	return nil
+}
+
 func newContainerCb(pod *pod, data []byte) error {
 	var payload hyper.NewContainer
 
@@ -1158,6 +1173,10 @@ func newContainerCb(pod *pod, data []byte) error {
 
 	absoluteRootFs, err := mountContainerRootFs(payload.ID, payload.Image, payload.RootFs, payload.FsType)
 	if err != nil {
+		return err
+	}
+
+	if err := mountDevToRootfs(absoluteRootFs); err != nil {
 		return err
 	}
 
@@ -1196,13 +1215,6 @@ func newContainerCb(pod *pod, data []byte) error {
 				Destination: "/proc",
 				Device:      "proc",
 				Flags:       defaultMountFlags,
-			},
-			{
-				Source:      "tmpfs",
-				Destination: "/dev",
-				Device:      "tmpfs",
-				Flags:       syscall.MS_NOSUID | syscall.MS_STRICTATIME,
-				Data:        "mode=755",
 			},
 			{
 				Source:      "devpts",
