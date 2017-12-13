@@ -215,8 +215,8 @@ func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 			Gw:        net.ParseIP(route.Gateway),
 		}
 
-		if err := netHandle.RouteReplace(netRoute); err != nil {
-			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %v",
+		if err := netHandle.RouteAdd(netRoute); err != nil {
+			return fmt.Errorf("Could not add route dest(%s)/src(%s)/gw(%s)/dev(%s): %v",
 				route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 
