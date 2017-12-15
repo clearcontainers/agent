@@ -197,7 +197,8 @@ func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 			if existingRoute != nil {
 				agentLog.WithField("route-destination", route.Dest).Info("Route destination already exists, deleting")
 				if err := netHandle.RouteDel(existingRoute); err != nil {
-					return err
+					return fmt.Errorf("Could not delete route dest(%s)/src(%s)/gw(%s)/devIndex(%d): %v",
+						existingRoute.Dst, existingRoute.Src, existingRoute.Gw, linkAttrs.Index, err)
 				}
 			}
 
@@ -214,8 +215,8 @@ func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 			Gw:        net.ParseIP(route.Gateway),
 		}
 
-		if err := netHandle.RouteReplace(netRoute); err != nil {
-			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %v",
+		if err := netHandle.RouteAdd(netRoute); err != nil {
+			return fmt.Errorf("Could not add route dest(%s)/src(%s)/gw(%s)/dev(%s): %v",
 				route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 
