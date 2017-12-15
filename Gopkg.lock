@@ -26,10 +26,10 @@
   version = "v3"
 
 [[projects]]
-  name = "github.com/docker/docker"
-  packages = ["pkg/longpath","pkg/mount","pkg/symlink","pkg/system"]
-  revision = "b9f10c951893f9a00865890a5232e85d770c1087"
-  version = "v1.11.2"
+  name = "github.com/cyphar/filepath-securejoin"
+  packages = ["."]
+  revision = "06bda8370f45268db985f7af15732444d94ed51c"
+  version = "v0.2.1"
 
 [[projects]]
   name = "github.com/docker/go-units"
@@ -76,8 +76,8 @@
 [[projects]]
   branch = "master"
   name = "github.com/opencontainers/runc"
-  packages = ["libcontainer","libcontainer/apparmor","libcontainer/cgroups","libcontainer/cgroups/fs","libcontainer/cgroups/rootless","libcontainer/cgroups/systemd","libcontainer/configs","libcontainer/configs/validate","libcontainer/criurpc","libcontainer/intelrdt","libcontainer/keys","libcontainer/nsenter","libcontainer/seccomp","libcontainer/stacktrace","libcontainer/system","libcontainer/user","libcontainer/utils"]
-  revision = "7c7d38bfe8b1a70dca1582bcd8ca91fc26cb9904"
+  packages = ["libcontainer","libcontainer/apparmor","libcontainer/cgroups","libcontainer/cgroups/fs","libcontainer/cgroups/systemd","libcontainer/configs","libcontainer/configs/validate","libcontainer/criurpc","libcontainer/intelrdt","libcontainer/keys","libcontainer/mount","libcontainer/nsenter","libcontainer/seccomp","libcontainer/stacktrace","libcontainer/system","libcontainer/user","libcontainer/utils"]
+  revision = "e6516b3d5dc780cb57a976013c242a9a93052543"
 
 [[projects]]
   name = "github.com/opencontainers/runtime-spec"
