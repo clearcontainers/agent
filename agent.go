@@ -156,14 +156,15 @@ type process struct {
 }
 
 type container struct {
-	container       libcontainer.Container
-	config          configs.Config
-	processes       map[string]*process
-	pod             *pod
-	processesLock   sync.RWMutex
-	wgProcesses     sync.WaitGroup
-	deviceNodes     []string
-	deviceNodesLock sync.Mutex
+	container        libcontainer.Container
+	config           configs.Config
+	processes        map[string]*process
+	pod              *pod
+	processesLock    sync.RWMutex
+	wgProcesses      sync.WaitGroup
+	deviceNodes      []string
+	deviceNodesLock  sync.Mutex
+	systemMountsInfo hyper.SystemMountsInfo
 }
 
 type pod struct {
@@ -559,8 +560,10 @@ func (p *pod) bindDeviceNode(devNode string) {
 			"ctr":     ctr.container.ID(),
 		}).Info("Bind mounting device to /dev")
 
-		if err := ctr.bindDeviceNode(devNode); err != nil {
-			fieldLogger.WithError(err).Info("Could not bind device")
+		if ctr.systemMountsInfo.BindMountDev {
+			if err := ctr.bindDeviceNode(devNode); err != nil {
+				fieldLogger.WithError(err).Info("Could not bind device")
+			}
 		}
 	}
 }
@@ -1341,12 +1344,6 @@ func newContainerCb(pod *pod, data []byte) error {
 				Device:      "sysfs",
 				Flags:       defaultMountFlags,
 			},
-			{
-				Source:      "/dev/vfio",
-				Destination: "/dev/vfio",
-				Device:      "bind",
-				Flags:       syscall.MS_BIND | syscall.MS_REC,
-			},
 		},
 
 		NoNewKeyring:    true,
@@ -1379,10 +1376,11 @@ func newContainerCb(pod *pod, data []byte) error {
 	processes[payload.Process.ID] = builtProcess
 
 	container := &container{
-		pod:       pod,
-		container: libContContainer,
-		config:    config,
-		processes: processes,
+		pod:              pod,
+		container:        libContContainer,
+		config:           config,
+		processes:        processes,
+		systemMountsInfo: payload.SystemMountsInfo,
 	}
 
 	pod.setContainer(payload.ID, container)
