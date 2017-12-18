@@ -332,7 +332,9 @@ func (p *pod) controlLoop(wg *sync.WaitGroup) {
 			reply = hyper.ErrorCmd
 		}
 
-		if response == nil {
+		if err != nil {
+			response = []byte(err.Error())
+		} else if response == nil {
 			response = []byte{}
 		}
 
