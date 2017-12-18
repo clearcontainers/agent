@@ -19,10 +19,13 @@ package virtcontainers
 import (
 	"crypto/rand"
 	"fmt"
+	"os"
 	"os/exec"
 )
 
 const cpBinaryName = "cp"
+
+const fileMode0755 = os.FileMode(0755)
 
 func fileCopy(srcPath, dstPath string) error {
 	if srcPath == "" {
@@ -63,4 +66,33 @@ func reverseString(s string) string {
 	}
 
 	return string(r)
+}
+
+func cleanupFds(fds []*os.File, numFds int) {
+
+	maxFds := len(fds)
+
+	if numFds < maxFds {
+		maxFds = numFds
+	}
+
+	for i := 0; i < maxFds; i++ {
+		_ = fds[i].Close()
+	}
+}
+
+// writeToFile opens a file in write only mode and writes bytes to it
+func writeToFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, fileMode0755)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+
+	return nil
 }

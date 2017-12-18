@@ -20,11 +20,21 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os/exec"
+	"path/filepath"
+	"time"
 
 	"github.com/clearcontainers/proxy/client"
+	"github.com/sirupsen/logrus"
 )
 
-var defaultCCProxyURL = "unix:///run/cc-oci-runtime/proxy.sock"
+var defaultCCProxyURL = "unix:///var/run/clear-containers/proxy.sock"
+
+const (
+	// Number of seconds to wait for the proxy to respond to a connection
+	// request.
+	waitForProxyTimeoutSecs = 5.0
+)
 
 type ccProxy struct {
 	client *client.Client
@@ -33,15 +43,68 @@ type ccProxy struct {
 // CCProxyConfig is a structure storing information needed for
 // the Clear Containers proxy initialization.
 type CCProxyConfig struct {
-	URL string
+	Path  string
+	Debug bool
 }
 
-func (p *ccProxy) connectProxy(proxyURL string) (*client.Client, error) {
-	if proxyURL == "" {
-		proxyURL = defaultCCProxyURL
+// connectProxyRetry repeatedly tries to connect to the proxy on the specified
+// address until a timeout state is reached, when it will fail.
+func (p *ccProxy) connectProxyRetry(scheme, address string) (conn net.Conn, err error) {
+	attempt := 1
+
+	timeoutSecs := time.Duration(waitForProxyTimeoutSecs * time.Second)
+
+	startTime := time.Now()
+	lastLogTime := startTime
+
+	for {
+		conn, err = net.Dial(scheme, address)
+		if err == nil {
+			// If the initial connection was unsuccessful,
+			// ensure a log message is generated when successfully
+			// connected.
+			if attempt > 1 {
+				proxyLogger().WithField("attempt", fmt.Sprintf("%d", attempt)).Info("Connected to proxy")
+			}
+
+			return conn, nil
+		}
+
+		attempt++
+
+		now := time.Now()
+
+		delta := now.Sub(startTime)
+		remaining := timeoutSecs - delta
+
+		if remaining <= 0 {
+			return nil, fmt.Errorf("failed to connect to proxy after %v: %v", timeoutSecs, err)
+		}
+
+		logDelta := now.Sub(lastLogTime)
+		logDeltaSecs := logDelta / time.Second
+
+		if logDeltaSecs >= 1 {
+			proxyLogger().WithError(err).WithFields(logrus.Fields{
+				"attempt":             fmt.Sprintf("%d", attempt),
+				"proxy-network":       scheme,
+				"proxy-address":       address,
+				"remaining-time-secs": fmt.Sprintf("%2.2f", remaining.Seconds()),
+			}).Warning("Retrying proxy connection")
+
+			lastLogTime = now
+		}
+
+		time.Sleep(time.Duration(100) * time.Millisecond)
+	}
+}
+
+func (p *ccProxy) connectProxy(uri string) (*client.Client, error) {
+	if uri == "" {
+		return nil, fmt.Errorf("no proxy URI")
 	}
 
-	u, err := url.Parse(proxyURL)
+	u, err := url.Parse(uri)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +122,7 @@ func (p *ccProxy) connectProxy(proxyURL string) (*client.Client, error) {
 		address = u.Path
 	}
 
-	conn, err := net.Dial(u.Scheme, address)
+	conn, err := p.connectProxyRetry(u.Scheme, address)
 	if err != nil {
 		return nil, err
 	}
@@ -67,17 +130,44 @@ func (p *ccProxy) connectProxy(proxyURL string) (*client.Client, error) {
 	return client.NewClient(conn), nil
 }
 
+// start is the proxy start implementation for ccProxy.
+func (p *ccProxy) start(pod Pod) (int, string, error) {
+	if pod.config == nil {
+		return -1, "", fmt.Errorf("Pod config cannot be nil")
+	}
+
+	config, ok := newProxyConfig(*(pod.config)).(CCProxyConfig)
+	if !ok {
+		return -1, "", fmt.Errorf("Wrong proxy config type, should be CCProxyConfig type")
+	}
+
+	if config.Path == "" {
+		return -1, "", fmt.Errorf("Proxy path cannot be empty")
+	}
+
+	// construct the socket path the proxy instance will use
+	socketPath := filepath.Join(runStoragePath, pod.id, "proxy.sock")
+	uri := fmt.Sprintf("unix://%s", socketPath)
+
+	args := []string{config.Path, "-uri", uri}
+	if config.Debug {
+		args = append(args, "-log", "debug")
+	}
+
+	cmd := exec.Command(args[0], args[1:]...)
+	if err := cmd.Start(); err != nil {
+		return -1, "", err
+	}
+
+	return cmd.Process.Pid, uri, nil
+}
+
 // register is the proxy register implementation for ccProxy.
 func (p *ccProxy) register(pod Pod) ([]ProxyInfo, string, error) {
 	var err error
 	var proxyInfos []ProxyInfo
 
-	ccConfig, ok := newProxyConfig(*(pod.config)).(CCProxyConfig)
-	if !ok {
-		return []ProxyInfo{}, "", fmt.Errorf("Wrong proxy config type, should be CCProxyConfig type")
-	}
-
-	p.client, err = p.connectProxy(ccConfig.URL)
+	p.client, err = p.connectProxy(pod.state.URL)
 	if err != nil {
 		return []ProxyInfo{}, "", err
 	}
@@ -133,12 +223,7 @@ func (p *ccProxy) unregister(pod Pod) error {
 func (p *ccProxy) connect(pod Pod, createToken bool) (ProxyInfo, string, error) {
 	var err error
 
-	ccConfig, ok := newProxyConfig(*(pod.config)).(CCProxyConfig)
-	if !ok {
-		return ProxyInfo{}, "", fmt.Errorf("Wrong proxy config type, should be CCProxyConfig type")
-	}
-
-	p.client, err = p.connectProxy(ccConfig.URL)
+	p.client, err = p.connectProxy(pod.state.URL)
 	if err != nil {
 		return ProxyInfo{}, "", err
 	}
@@ -207,9 +292,5 @@ func (p *ccProxy) sendCmd(cmd interface{}) (interface{}, error) {
 		tokens = append(tokens, proxyCmd.token)
 	}
 
-	if _, err := p.client.HyperWithTokens(proxyCmd.cmd, tokens, proxyCmd.message); err != nil {
-		return nil, err
-	}
-
-	return nil, nil
+	return p.client.HyperWithTokens(proxyCmd.cmd, tokens, proxyCmd.message)
 }

@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/mitchellh/mapstructure"
+	"github.com/sirupsen/logrus"
 )
 
 // ProxyType describes a proxy type.
@@ -32,6 +33,10 @@ const (
 	// NoopProxyType is the noopProxy.
 	NoopProxyType ProxyType = "noopProxy"
 )
+
+func proxyLogger() *logrus.Entry {
+	return virtLog.WithField("subsystem", "proxy")
+}
 
 // Set sets a proxy type based on the input string.
 func (pType *ProxyType) Set(value string) error {
@@ -88,7 +93,7 @@ func newProxyConfig(config PodConfig) interface{} {
 	}
 }
 
-// ProxyInfo holds the token and url returned by the proxy.
+// ProxyInfo holds the token returned by the proxy.
 // Each ProxyInfo relates to a process running inside a container.
 type ProxyInfo struct {
 	Token string
@@ -96,6 +101,10 @@ type ProxyInfo struct {
 
 // proxy is the virtcontainers proxy interface.
 type proxy interface {
+	// start launches a proxy instance for the specified pod, returning
+	// the PID of the process and the URL used to connect to it.
+	start(pod Pod) (int, string, error)
+
 	// register connects and registers the proxy to the given VM.
 	// It also returns information related to containers workloads.
 	register(pod Pod) ([]ProxyInfo, string, error)

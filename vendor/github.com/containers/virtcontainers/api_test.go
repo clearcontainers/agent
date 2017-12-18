@@ -29,9 +29,7 @@ import (
 )
 
 const (
-	testHyperstartPausePath    = "/tmp/bundles/pause_bundle/rootfs/bin"
-	testHyperstartPauseBinName = "pause"
-	containerID                = "1"
+	containerID = "1"
 )
 
 var podAnnotations = map[string]string{
@@ -276,7 +274,7 @@ func TestCreatePodFailing(t *testing.T) {
 	config := PodConfig{}
 
 	p, err := CreatePod(config)
-	if p != nil || err == nil {
+	if p.(*Pod) != nil || err == nil {
 		t.Fatal()
 	}
 }
@@ -367,14 +365,7 @@ func TestStartPodHyperstartAgentSuccessful(t *testing.T) {
 
 	config := newTestPodConfigHyperstartAgent()
 
-	pauseBinPath := filepath.Join(testDir, testHyperstartPauseBinName)
-	_, err := os.Create(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	hyperConfig := config.AgentConfig.(HyperConfig)
-	hyperConfig.PauseBinPath = pauseBinPath
 	config.AgentConfig = hyperConfig
 
 	p, _, err := createAndStartPod(config)
@@ -386,11 +377,6 @@ func TestStartPodHyperstartAgentSuccessful(t *testing.T) {
 	assert.True(t, ok)
 
 	pImpl.agent.(*hyper).bindUnmountAllRootfs(*pImpl)
-
-	err = os.Remove(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestStartPodFailing(t *testing.T) {
@@ -489,14 +475,7 @@ func TestStopPodHyperstartAgentSuccessful(t *testing.T) {
 
 	config := newTestPodConfigHyperstartAgent()
 
-	pauseBinPath := filepath.Join(testDir, testHyperstartPauseBinName)
-	_, err := os.Create(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	hyperConfig := config.AgentConfig.(HyperConfig)
-	hyperConfig.PauseBinPath = pauseBinPath
 	config.AgentConfig = hyperConfig
 
 	p, _, err := createAndStartPod(config)
@@ -506,11 +485,6 @@ func TestStopPodHyperstartAgentSuccessful(t *testing.T) {
 
 	p, err = StopPod(p.ID())
 	if p == nil || err != nil {
-		t.Fatal(err)
-	}
-
-	err = os.Remove(pauseBinPath)
-	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -553,14 +527,7 @@ func TestRunPodHyperstartAgentSuccessful(t *testing.T) {
 
 	config := newTestPodConfigHyperstartAgent()
 
-	pauseBinPath := filepath.Join(testDir, testHyperstartPauseBinName)
-	_, err := os.Create(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	hyperConfig := config.AgentConfig.(HyperConfig)
-	hyperConfig.PauseBinPath = pauseBinPath
 	config.AgentConfig = hyperConfig
 
 	p, err := RunPod(config)
@@ -578,11 +545,6 @@ func TestRunPodHyperstartAgentSuccessful(t *testing.T) {
 	assert.True(t, ok)
 
 	pImpl.agent.(*hyper).bindUnmountAllRootfs(*pImpl)
-
-	err = os.Remove(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestRunPodFailing(t *testing.T) {
@@ -633,13 +595,17 @@ func TestStatusPodSuccessfulStateReady(t *testing.T) {
 		KernelPath:     filepath.Join(testDir, testKernel),
 		ImagePath:      filepath.Join(testDir, testImage),
 		HypervisorPath: filepath.Join(testDir, testHypervisor),
+		DefaultVCPUs:   defaultVCPUs,
+		DefaultMemSz:   defaultMemSzMiB,
+		DefaultBridges: defaultBridges,
 	}
 
 	expectedStatus := PodStatus{
 		ID: testPodID,
 		State: State{
-			State: StateReady,
-			URL:   "noopProxyURL",
+			State:    StateReady,
+			URL:      "noopProxyURL",
+			ProxyPid: 0,
 		},
 		Hypervisor:       MockHypervisor,
 		HypervisorConfig: hypervisorConfig,
@@ -686,6 +652,9 @@ func TestStatusPodSuccessfulStateRunning(t *testing.T) {
 		KernelPath:     filepath.Join(testDir, testKernel),
 		ImagePath:      filepath.Join(testDir, testImage),
 		HypervisorPath: filepath.Join(testDir, testHypervisor),
+		DefaultVCPUs:   defaultVCPUs,
+		DefaultMemSz:   defaultMemSzMiB,
+		DefaultBridges: defaultBridges,
 	}
 
 	expectedStatus := PodStatus{
@@ -702,7 +671,7 @@ func TestStatusPodSuccessfulStateRunning(t *testing.T) {
 			{
 				ID: containerID,
 				State: State{
-					State: StateStopped,
+					State: StateRunning,
 					URL:   "",
 				},
 				PID:         1000,
@@ -1072,14 +1041,7 @@ func TestStartStopContainerHyperstartAgentSuccessful(t *testing.T) {
 	contID := "100"
 	config := newTestPodConfigHyperstartAgent()
 
-	pauseBinPath := filepath.Join(testDir, testHyperstartPauseBinName)
-	_, err := os.Create(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	hyperConfig := config.AgentConfig.(HyperConfig)
-	hyperConfig.PauseBinPath = pauseBinPath
 	config.AgentConfig = hyperConfig
 
 	p, podDir, err := createAndStartPod(config)
@@ -1114,11 +1076,6 @@ func TestStartStopContainerHyperstartAgentSuccessful(t *testing.T) {
 	assert.True(t, ok)
 
 	pImpl.agent.(*hyper).bindUnmountAllRootfs(*pImpl)
-
-	err = os.Remove(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestStartStopPodHyperstartAgentSuccessfulWithCNINetwork(t *testing.T) {
@@ -1130,14 +1087,7 @@ func TestStartStopPodHyperstartAgentSuccessfulWithCNINetwork(t *testing.T) {
 
 	config := newTestPodConfigHyperstartAgentCNINetwork()
 
-	pauseBinPath := filepath.Join(testDir, testHyperstartPauseBinName)
-	_, err := os.Create(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	hyperConfig := config.AgentConfig.(HyperConfig)
-	hyperConfig.PauseBinPath = pauseBinPath
 	config.AgentConfig = hyperConfig
 
 	p, _, err := createAndStartPod(config)
@@ -1154,11 +1104,6 @@ func TestStartStopPodHyperstartAgentSuccessfulWithCNINetwork(t *testing.T) {
 	if p == nil || err != nil {
 		t.Fatal(err)
 	}
-
-	err = os.Remove(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestStartStopPodHyperstartAgentSuccessfulWithCNMNetwork(t *testing.T) {
@@ -1168,14 +1113,7 @@ func TestStartStopPodHyperstartAgentSuccessfulWithCNMNetwork(t *testing.T) {
 
 	config := newTestPodConfigHyperstartAgentCNMNetwork()
 
-	pauseBinPath := filepath.Join(testDir, testHyperstartPauseBinName)
-	_, err := os.Create(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	hyperConfig := config.AgentConfig.(HyperConfig)
-	hyperConfig.PauseBinPath = pauseBinPath
 	config.AgentConfig = hyperConfig
 
 	p, _, err := createAndStartPod(config)
@@ -1190,11 +1128,6 @@ func TestStartStopPodHyperstartAgentSuccessfulWithCNMNetwork(t *testing.T) {
 
 	v, err = DeletePod(p.ID())
 	if v == nil || err != nil {
-		t.Fatal(err)
-	}
-
-	err = os.Remove(pauseBinPath)
-	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1322,14 +1255,7 @@ func TestEnterContainerHyperstartAgentSuccessful(t *testing.T) {
 	contID := "100"
 	config := newTestPodConfigHyperstartAgent()
 
-	pauseBinPath := filepath.Join(testDir, testHyperstartPauseBinName)
-	_, err := os.Create(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	hyperConfig := config.AgentConfig.(HyperConfig)
-	hyperConfig.PauseBinPath = pauseBinPath
 	config.AgentConfig = hyperConfig
 
 	p, podDir, err := createAndStartPod(config)
@@ -1371,11 +1297,6 @@ func TestEnterContainerHyperstartAgentSuccessful(t *testing.T) {
 	assert.True(t, ok)
 
 	pImpl.agent.(*hyper).bindUnmountAllRootfs(*pImpl)
-
-	err = os.Remove(pauseBinPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestEnterContainerFailingNoPod(t *testing.T) {
@@ -1548,6 +1469,8 @@ func TestStatusContainerStateReady(t *testing.T) {
 		Annotations: containerAnnotations,
 	}
 
+	defer p2.wg.Wait()
+
 	status, err := statusContainer(p2, contID)
 	if err != nil {
 		t.Fatal(err)
@@ -1612,13 +1535,15 @@ func TestStatusContainerStateRunning(t *testing.T) {
 	expectedStatus := ContainerStatus{
 		ID: contID,
 		State: State{
-			State: StateStopped,
+			State: StateRunning,
 			URL:   "",
 		},
 		PID:         1000,
 		RootFs:      filepath.Join(testDir, testBundle),
 		Annotations: containerAnnotations,
 	}
+
+	defer p2.wg.Wait()
 
 	status, err := statusContainer(p2, contID)
 	if err != nil {
@@ -1654,6 +1579,51 @@ func TestStatusContainerFailing(t *testing.T) {
 	if err == nil {
 		t.Fatal()
 	}
+}
+
+func TestProcessListContainer(t *testing.T) {
+	cleanUp()
+
+	assert := assert.New(t)
+
+	contID := "abc"
+	options := ProcessListOptions{
+		Format: "json",
+		Args:   []string{"-ef"},
+	}
+
+	_, err := ProcessListContainer("", "", options)
+	assert.Error(err)
+
+	_, err = ProcessListContainer("xyz", "", options)
+	assert.Error(err)
+
+	_, err = ProcessListContainer("xyz", "xyz", options)
+	assert.Error(err)
+
+	config := newTestPodConfigNoop()
+	p, err := CreatePod(config)
+	assert.NoError(err)
+	assert.NotNil(p)
+
+	pImpl, ok := p.(*Pod)
+	assert.True(ok)
+	defer os.RemoveAll(pImpl.configPath)
+
+	contConfig := newTestContainerConfigNoop(contID)
+	_, c, err := CreateContainer(p.ID(), contConfig)
+	assert.NoError(err)
+	assert.NotNil(c)
+
+	_, err = ProcessListContainer(pImpl.id, "xyz", options)
+	assert.Error(err)
+
+	_, err = ProcessListContainer("xyz", contID, options)
+	assert.Error(err)
+
+	_, err = ProcessListContainer(pImpl.id, contID, options)
+	// Pod not running, impossible to ps the container
+	assert.Error(err)
 }
 
 /*
@@ -1818,13 +1788,9 @@ func createStartStopDeleteContainers(b *testing.B, podConfig PodConfig, contConf
 	}
 }
 
-var benchmarkHyperConfig = HyperConfig{
-	PauseBinPath: filepath.Join(testHyperstartPausePath, testHyperstartPauseBinName),
-}
-
 func BenchmarkCreateStartStopDeletePodQemuHypervisorHyperstartAgentNetworkCNI(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		podConfig := createNewPodConfig(QemuHypervisor, HyperstartAgent, benchmarkHyperConfig, CNINetworkModel)
+		podConfig := createNewPodConfig(QemuHypervisor, HyperstartAgent, HyperConfig{}, CNINetworkModel)
 		createStartStopDeletePod(b, podConfig)
 	}
 }
@@ -1838,7 +1804,7 @@ func BenchmarkCreateStartStopDeletePodQemuHypervisorNoopAgentNetworkCNI(b *testi
 
 func BenchmarkCreateStartStopDeletePodQemuHypervisorHyperstartAgentNetworkNoop(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		podConfig := createNewPodConfig(QemuHypervisor, HyperstartAgent, benchmarkHyperConfig, NoopNetworkModel)
+		podConfig := createNewPodConfig(QemuHypervisor, HyperstartAgent, HyperConfig{}, NoopNetworkModel)
 		createStartStopDeletePod(b, podConfig)
 	}
 }
@@ -1859,7 +1825,7 @@ func BenchmarkCreateStartStopDeletePodMockHypervisorNoopAgentNetworkNoop(b *test
 
 func BenchmarkStartStop1ContainerQemuHypervisorHyperstartAgentNetworkNoop(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		podConfig := createNewPodConfig(QemuHypervisor, HyperstartAgent, benchmarkHyperConfig, NoopNetworkModel)
+		podConfig := createNewPodConfig(QemuHypervisor, HyperstartAgent, HyperConfig{}, NoopNetworkModel)
 		contConfigs := createNewContainerConfigs(1)
 		createStartStopDeleteContainers(b, podConfig, contConfigs)
 	}
@@ -1867,7 +1833,7 @@ func BenchmarkStartStop1ContainerQemuHypervisorHyperstartAgentNetworkNoop(b *tes
 
 func BenchmarkStartStop10ContainerQemuHypervisorHyperstartAgentNetworkNoop(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		podConfig := createNewPodConfig(QemuHypervisor, HyperstartAgent, benchmarkHyperConfig, NoopNetworkModel)
+		podConfig := createNewPodConfig(QemuHypervisor, HyperstartAgent, HyperConfig{}, NoopNetworkModel)
 		contConfigs := createNewContainerConfigs(10)
 		createStartStopDeleteContainers(b, podConfig, contConfigs)
 	}
