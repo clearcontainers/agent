@@ -21,21 +21,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	ciaoQemu "github.com/01org/ciao/qemu"
-	"github.com/01org/ciao/ssntp/uuid"
+	"github.com/containers/virtcontainers/pkg/uuid"
+	govmmQemu "github.com/intel/govmm/qemu"
+	"github.com/sirupsen/logrus"
 )
 
 type qmpChannel struct {
-	ctx          context.Context
-	path         string
-	disconnectCh chan struct{}
-	wg           sync.WaitGroup
-	qmp          *ciaoQemu.QMP
+	ctx  context.Context
+	path string
+	wg   sync.WaitGroup
+	qmp  *govmmQemu.QMP
+}
+
+// QemuState keeps Qemu's state
+type QemuState struct {
+	Bridges []Bridge
+	UUID    string
 }
 
 // qemu is an Hypervisor interface implementation for the Linux qemu hypervisor.
@@ -49,9 +54,13 @@ type qemu struct {
 	qmpMonitorCh qmpChannel
 	qmpControlCh qmpChannel
 
-	qemuConfig ciaoQemu.Config
+	qemuConfig govmmQemu.Config
 
 	nestedRun bool
+
+	pod *Pod
+
+	state QemuState
 }
 
 const defaultQemuPath = "/usr/bin/qemu-system-x86_64"
@@ -71,6 +80,10 @@ const (
 	QemuQ35 = "q35"
 )
 
+const qmpCapErrMsg = "Failed to negoatiate QMP capabilities"
+
+const qmpSockPathSizeLimit = 107
+
 // Mapping between machine types and QEMU binary paths.
 var qemuPaths = map[string]string{
 	QemuPCLite: "/usr/bin/qemu-lite-system-x86_64",
@@ -78,7 +91,7 @@ var qemuPaths = map[string]string{
 	QemuQ35:    "/usr/bin/qemu-35-system-x86_64",
 }
 
-var supportedQemuMachines = []ciaoQemu.Machine{
+var supportedQemuMachines = []govmmQemu.Machine{
 	{
 		Type:         QemuPCLite,
 		Acceleration: defaultQemuMachineAccelerators,
@@ -123,7 +136,15 @@ const (
 	removeDevice
 )
 
-type qmpLogger struct{}
+type qmpLogger struct {
+	logger *logrus.Entry
+}
+
+func newQMPLogger() qmpLogger {
+	return qmpLogger{
+		logger: virtLog.WithField("subsystem", "qmp"),
+	}
+}
 
 func (l qmpLogger) V(level int32) bool {
 	if level != 0 {
@@ -134,15 +155,15 @@ func (l qmpLogger) V(level int32) bool {
 }
 
 func (l qmpLogger) Infof(format string, v ...interface{}) {
-	virtLog.Infof(format, v...)
+	l.logger.Infof(format, v...)
 }
 
 func (l qmpLogger) Warningf(format string, v ...interface{}) {
-	virtLog.Warnf(format, v...)
+	l.logger.Warnf(format, v...)
 }
 
 func (l qmpLogger) Errorf(format string, v ...interface{}) {
-	virtLog.Errorf(format, v...)
+	l.logger.Errorf(format, v...)
 }
 
 var kernelDefaultParams = []Param{
@@ -183,6 +204,11 @@ var kernelDefaultParamsDebug = []Param{
 	{"systemd.log_level", "debug"},
 }
 
+// Logger returns a logrus logger appropriate for logging qemu messages
+func (q *qemu) Logger() *logrus.Entry {
+	return virtLog.WithField("subsystem", "qemu")
+}
+
 func (q *qemu) buildKernelParams(config HypervisorConfig) error {
 	params := kernelDefaultParams
 
@@ -211,7 +237,7 @@ func (q *qemu) capabilities() capabilities {
 	return caps
 }
 
-func (q *qemu) appendVolume(devices []ciaoQemu.Device, volume Volume) []ciaoQemu.Device {
+func (q *qemu) appendVolume(devices []govmmQemu.Device, volume Volume) []govmmQemu.Device {
 	if volume.MountTag == "" || volume.HostPath == "" {
 		return devices
 	}
@@ -222,13 +248,13 @@ func (q *qemu) appendVolume(devices []ciaoQemu.Device, volume Volume) []ciaoQemu
 	}
 
 	devices = append(devices,
-		ciaoQemu.FSDevice{
-			Driver:        ciaoQemu.Virtio9P,
-			FSDriver:      ciaoQemu.Local,
+		govmmQemu.FSDevice{
+			Driver:        govmmQemu.Virtio9P,
+			FSDriver:      govmmQemu.Local,
 			ID:            devID,
 			Path:          volume.HostPath,
 			MountTag:      volume.MountTag,
-			SecurityModel: ciaoQemu.None,
+			SecurityModel: govmmQemu.None,
 			DisableModern: q.nestedRun,
 		},
 	)
@@ -236,7 +262,7 @@ func (q *qemu) appendVolume(devices []ciaoQemu.Device, volume Volume) []ciaoQemu
 	return devices
 }
 
-func (q *qemu) appendBlockDevice(devices []ciaoQemu.Device, drive Drive) []ciaoQemu.Device {
+func (q *qemu) appendBlockDevice(devices []govmmQemu.Device, drive Drive) []govmmQemu.Device {
 	if drive.File == "" || drive.ID == "" || drive.Format == "" {
 		return devices
 	}
@@ -246,12 +272,12 @@ func (q *qemu) appendBlockDevice(devices []ciaoQemu.Device, drive Drive) []ciaoQ
 	}
 
 	devices = append(devices,
-		ciaoQemu.BlockDevice{
-			Driver:        ciaoQemu.VirtioBlock,
+		govmmQemu.BlockDevice{
+			Driver:        govmmQemu.VirtioBlock,
 			ID:            drive.ID,
 			File:          drive.File,
-			AIO:           ciaoQemu.Threads,
-			Format:        ciaoQemu.BlockDeviceFormat(drive.Format),
+			AIO:           govmmQemu.Threads,
+			Format:        govmmQemu.BlockDeviceFormat(drive.Format),
 			Interface:     "none",
 			DisableModern: q.nestedRun,
 		},
@@ -260,13 +286,13 @@ func (q *qemu) appendBlockDevice(devices []ciaoQemu.Device, drive Drive) []ciaoQ
 	return devices
 }
 
-func (q *qemu) appendVFIODevice(devices []ciaoQemu.Device, vfDevice VFIODevice) []ciaoQemu.Device {
+func (q *qemu) appendVFIODevice(devices []govmmQemu.Device, vfDevice VFIODevice) []govmmQemu.Device {
 	if vfDevice.BDF == "" {
 		return devices
 	}
 
 	devices = append(devices,
-		ciaoQemu.VFIODevice{
+		govmmQemu.VFIODevice{
 			BDF: vfDevice.BDF,
 		},
 	)
@@ -274,16 +300,16 @@ func (q *qemu) appendVFIODevice(devices []ciaoQemu.Device, vfDevice VFIODevice) 
 	return devices
 }
 
-func (q *qemu) appendSocket(devices []ciaoQemu.Device, socket Socket) []ciaoQemu.Device {
+func (q *qemu) appendSocket(devices []govmmQemu.Device, socket Socket) []govmmQemu.Device {
 	devID := socket.ID
 	if len(devID) > maxDevIDSize {
 		devID = string(devID[:maxDevIDSize])
 	}
 
 	devices = append(devices,
-		ciaoQemu.CharDevice{
-			Driver:   ciaoQemu.VirtioSerialPort,
-			Backend:  ciaoQemu.Socket,
+		govmmQemu.CharDevice{
+			Driver:   govmmQemu.VirtioSerialPort,
+			Backend:  govmmQemu.Socket,
 			DeviceID: socket.DeviceID,
 			ID:       devID,
 			Path:     socket.HostPath,
@@ -294,46 +320,50 @@ func (q *qemu) appendSocket(devices []ciaoQemu.Device, socket Socket) []ciaoQemu
 	return devices
 }
 
-func (q *qemu) appendNetworks(devices []ciaoQemu.Device, endpoints []Endpoint) []ciaoQemu.Device {
-	for idx, endpoint := range endpoints {
+func networkModelToQemuType(model NetInterworkingModel) govmmQemu.NetDeviceType {
+	switch model {
+	case ModelBridged:
+		return govmmQemu.MACVTAP //TODO: We should rename MACVTAP to .NET_FD
+	case ModelMacVtap:
+		return govmmQemu.MACVTAP
+	//case ModelEnlightened:
+	// Here the Network plugin will create a VM native interface
+	// which could be MacVtap, IpVtap, SRIOV, veth-tap, vhost-user
+	// In these cases we will determine the interface type here
+	// and pass in the native interface through
+	default:
+		//TAP should work for most other cases
+		return govmmQemu.TAP
+	}
+}
+
+var networkIndex = 0
+
+func (q *qemu) appendNetwork(devices []govmmQemu.Device, endpoint Endpoint) []govmmQemu.Device {
+	switch ep := endpoint.(type) {
+	case *VirtualEndpoint:
 		devices = append(devices,
-			ciaoQemu.NetDevice{
-				Type:          ciaoQemu.TAP,
-				Driver:        ciaoQemu.VirtioNetPCI,
-				ID:            fmt.Sprintf("network-%d", idx),
-				IFName:        endpoint.NetPair.TAPIface.Name,
-				MACAddress:    endpoint.NetPair.TAPIface.HardAddr,
+			govmmQemu.NetDevice{
+				Type:          networkModelToQemuType(ep.NetPair.NetInterworkingModel),
+				Driver:        govmmQemu.VirtioNetPCI,
+				ID:            fmt.Sprintf("network-%d", networkIndex),
+				IFName:        ep.NetPair.TAPIface.Name,
+				MACAddress:    ep.NetPair.TAPIface.HardAddr,
 				DownScript:    "no",
 				Script:        "no",
 				VHost:         true,
 				DisableModern: q.nestedRun,
+				FDs:           ep.NetPair.VMFds,
+				VhostFDs:      ep.NetPair.VhostFds,
 			},
 		)
+		networkIndex++
 	}
 
 	return devices
 }
 
-func (q *qemu) appendFSDevices(devices []ciaoQemu.Device, podConfig PodConfig) []ciaoQemu.Device {
-	// Add the containers rootfs
-	for idx, c := range podConfig.Containers {
-		if c.RootFs == "" || c.ID == "" {
-			continue
-		}
-
-		devices = append(devices,
-			ciaoQemu.FSDevice{
-				Driver:        ciaoQemu.Virtio9P,
-				FSDriver:      ciaoQemu.Local,
-				ID:            fmt.Sprintf("ctr-9p-%d", idx),
-				Path:          c.RootFs,
-				MountTag:      fmt.Sprintf("ctr-rootfs-%d", idx),
-				SecurityModel: ciaoQemu.None,
-				DisableModern: q.nestedRun,
-			},
-		)
-	}
-
+func (q *qemu) appendFSDevices(devices []govmmQemu.Device, podConfig PodConfig) []govmmQemu.Device {
 	// Add the shared volumes
 	for _, v := range podConfig.Volumes {
 		devices = q.appendVolume(devices, v)
@@ -342,20 +372,47 @@ func (q *qemu) appendFSDevices(devices []ciaoQemu.Device, podConfig PodConfig) [
 	return devices
 }
 
-func (q *qemu) appendConsoles(devices []ciaoQemu.Device, podConfig PodConfig) []ciaoQemu.Device {
-	serial := ciaoQemu.SerialDevice{
-		Driver:        ciaoQemu.VirtioSerial,
+func (q *qemu) appendBridges(devices []govmmQemu.Device, podConfig PodConfig) ([]govmmQemu.Device, error) {
+	bus := "pci.0"
+	if podConfig.HypervisorConfig.HypervisorMachineType == QemuQ35 {
+		bus = "pcie.0"
+	}
+
+	for idx, b := range q.state.Bridges {
+		t := govmmQemu.PCIBridge
+		if b.Type == pcieBridge {
+			t = govmmQemu.PCIEBridge
+		}
+
+		devices = append(devices,
+			govmmQemu.BridgeDevice{
+				Type: t,
+				Bus:  bus,
+				ID:   b.ID,
+				// Each bridge is required to be assigned a unique chassis id > 0
+				Chassis: (idx + 1),
+				SHPC:    true,
+			},
+		)
+	}
+
+	return devices, nil
+}
+
+func (q *qemu) appendConsoles(devices []govmmQemu.Device, podConfig PodConfig) []govmmQemu.Device {
+	serial := govmmQemu.SerialDevice{
+		Driver:        govmmQemu.VirtioSerial,
 		ID:            "serial0",
 		DisableModern: q.nestedRun,
 	}
 
 	devices = append(devices, serial)
 
-	var console ciaoQemu.CharDevice
+	var console govmmQemu.CharDevice
 
-	console = ciaoQemu.CharDevice{
-		Driver:   ciaoQemu.Console,
-		Backend:  ciaoQemu.Socket,
+	console = govmmQemu.CharDevice{
+		Driver:   govmmQemu.Console,
+		Backend:  govmmQemu.Socket,
 		DeviceID: "console0",
 		ID:       "charconsole0",
 		Path:     q.getPodConsole(podConfig.ID),
@@ -366,8 +423,13 @@ func (q *qemu) appendConsoles(devices []ciaoQemu.Device, podConfig PodConfig) []
 	return devices
 }
 
-func (q *qemu) appendImage(devices []ciaoQemu.Device, podConfig PodConfig) ([]ciaoQemu.Device, error) {
-	imageFile, err := os.Open(q.config.ImagePath)
+func (q *qemu) appendImage(devices []govmmQemu.Device, podConfig PodConfig) ([]govmmQemu.Device, error) {
+	imagePath, err := q.config.ImageAssetPath()
+	if err != nil {
+		return nil, err
+	}
+
+	imageFile, err := os.Open(imagePath)
 	if err != nil {
 		return nil, err
 	}
@@ -378,12 +440,12 @@ func (q *qemu) appendImage(devices []ciaoQemu.Device, podConfig PodConfig) ([]ci
 		return nil, err
 	}
 
-	object := ciaoQemu.Object{
-		Driver:   ciaoQemu.NVDIMM,
-		Type:     ciaoQemu.MemoryBackendFile,
+	object := govmmQemu.Object{
+		Driver:   govmmQemu.NVDIMM,
+		Type:     govmmQemu.MemoryBackendFile,
 		DeviceID: "nv0",
 		ID:       "mem0",
-		MemPath:  q.config.ImagePath,
+		MemPath:  imagePath,
 		Size:     (uint64)(imageStat.Size()),
 	}
 
@@ -392,38 +454,23 @@ func (q *qemu) appendImage(devices []ciaoQemu.Device, podConfig PodConfig) ([]ci
 	return devices, nil
 }
 
-func (q *qemu) forceUUIDFormat(str string) string {
-	re := regexp.MustCompile(`[^[0-9,a-f,A-F]]*`)
-	hexStr := re.ReplaceAllLiteralString(str, ``)
-
-	slice := []byte(hexStr)
-	sliceLen := len(slice)
-
-	var uuidSlice uuid.UUID
-	uuidLen := len(uuidSlice)
-
-	if sliceLen > uuidLen {
-		copy(uuidSlice[:], slice[:uuidLen])
-	} else {
-		copy(uuidSlice[:], slice)
-	}
-
-	return uuidSlice.String()
-}
-
-func (q *qemu) getMachine(name string) (ciaoQemu.Machine, error) {
+func (q *qemu) getMachine(name string) (govmmQemu.Machine, error) {
 	for _, m := range supportedQemuMachines {
 		if m.Type == name {
 			return m, nil
 		}
 	}
 
-	return ciaoQemu.Machine{}, fmt.Errorf("unrecognised machine type: %v", name)
+	return govmmQemu.Machine{}, fmt.Errorf("unrecognised machine type: %v", name)
 }
 
 // Build the QEMU binary path
 func (q *qemu) buildPath() error {
-	p := q.config.HypervisorPath
+	p, err := q.config.HypervisorAssetPath()
+	if err != nil {
+		return err
+	}
+
 	if p != "" {
 		q.path = p
 		return nil
@@ -437,7 +484,7 @@ func (q *qemu) buildPath() error {
 
 	p, ok := qemuPaths[machineType]
 	if !ok {
-		virtLog.Warnf("Unknown machine type %s", machineType)
+		q.Logger().WithField("machine-type", machineType).Warn("Unknown machine type")
 		p = defaultQemuPath
 	}
 
@@ -451,19 +498,32 @@ func (q *qemu) buildPath() error {
 }
 
 // init intializes the Qemu structure.
-func (q *qemu) init(config HypervisorConfig) error {
-	valid, err := config.valid()
+func (q *qemu) init(pod *Pod) error {
+	valid, err := pod.config.HypervisorConfig.valid()
 	if valid == false || err != nil {
 		return err
 	}
 
-	q.config = config
+	q.config = pod.config.HypervisorConfig
+	q.pod = pod
 
-	if err = q.buildPath(); err != nil {
+	if err := pod.storage.fetchHypervisorState(pod.id, &q.state); err != nil {
+		q.Logger().Debug("Creating bridges")
+		q.state.Bridges = NewBridges(q.config.DefaultBridges, q.config.HypervisorMachineType)
+
+		q.Logger().Debug("Creating UUID")
+		q.state.UUID = uuid.Generate().String()
+
+		if err := pod.storage.storeHypervisorState(pod.id, q.state); err != nil {
+			return err
+		}
+	}
+
+	if err := q.buildPath(); err != nil {
 		return err
 	}
 
-	if err = q.buildKernelParams(config); err != nil {
+	if err := q.buildKernelParams(q.config); err != nil {
 		return err
 	}
 
@@ -472,9 +532,9 @@ func (q *qemu) init(config HypervisorConfig) error {
 		return err
 	}
 
-	virtLog.Debugf("Running inside a VM = %v", nested)
+	q.Logger().WithField("inside-vm", fmt.Sprintf("%t", nested)).Debug("Checking nesting environment")
 
-	if config.DisableNestingChecks {
+	if q.config.DisableNestingChecks {
 		//Intentionally ignore the nesting check
 		q.nestedRun = false
 	} else {
@@ -484,43 +544,13 @@ func (q *qemu) init(config HypervisorConfig) error {
 	return nil
 }
 
-func (q *qemu) qmpMonitor(connectedCh chan struct{}) {
-	defer func(qemu *qemu) {
-		if q.qmpMonitorCh.qmp != nil {
-			q.qmpMonitorCh.qmp.Shutdown()
-		}
-
-		q.qmpMonitorCh.wg.Done()
-	}(q)
-
-	cfg := ciaoQemu.QMPConfig{Logger: qmpLogger{}}
-	qmp, ver, err := ciaoQemu.QMPStart(q.qmpMonitorCh.ctx, q.qmpMonitorCh.path, cfg, q.qmpMonitorCh.disconnectCh)
-	if err != nil {
-		virtLog.Errorf("Failed to connect to QEMU instance %v", err)
-		return
-	}
-
-	q.qmpMonitorCh.qmp = qmp
-
-	virtLog.Infof("QMP version %d.%d.%d", ver.Major, ver.Minor, ver.Micro)
-	virtLog.Infof("QMP capabilities %s", ver.Capabilities)
-
-	err = q.qmpMonitorCh.qmp.ExecuteQMPCapabilities(q.qmpMonitorCh.ctx)
-	if err != nil {
-		virtLog.Errorf("Unable to send qmp_capabilities command: %v", err)
-		return
-	}
-
-	close(connectedCh)
-}
-
-func (q *qemu) setCPUResources(podConfig PodConfig) ciaoQemu.SMP {
+func (q *qemu) setCPUResources(podConfig PodConfig) govmmQemu.SMP {
 	vcpus := q.config.DefaultVCPUs
 	if podConfig.VMConfig.VCPUs > 0 {
 		vcpus = uint32(podConfig.VMConfig.VCPUs)
 	}
 
-	smp := ciaoQemu.SMP{
+	smp := govmmQemu.SMP{
 		CPUs:    vcpus,
 		Cores:   vcpus,
 		Sockets: defaultSockets,
@@ -530,13 +560,13 @@ func (q *qemu) setCPUResources(podConfig PodConfig) ciaoQemu.SMP {
 	return smp
 }
 
-func (q *qemu) setMemoryResources(podConfig PodConfig) (ciaoQemu.Memory, error) {
+func (q *qemu) setMemoryResources(podConfig PodConfig) (govmmQemu.Memory, error) {
 	hostMemKb, err := getHostMemorySizeKb(procMemInfo)
 	if err != nil {
-		return ciaoQemu.Memory{}, fmt.Errorf("Unable to read memory info: %s", err)
+		return govmmQemu.Memory{}, fmt.Errorf("Unable to read memory info: %s", err)
 	}
 	if hostMemKb == 0 {
-		return ciaoQemu.Memory{}, fmt.Errorf("Error host memory size 0")
+		return govmmQemu.Memory{}, fmt.Errorf("Error host memory size 0")
 	}
 
 	// add 1G memory space for nvdimm device (vm guest image)
@@ -546,7 +576,7 @@ func (q *qemu) setMemoryResources(podConfig PodConfig) (ciaoQemu.Memory, error) 
 		mem = fmt.Sprintf("%dM", podConfig.VMConfig.Memory)
 	}
 
-	memory := ciaoQemu.Memory{
+	memory := govmmQemu.Memory{
 		Size:   mem,
 		Slots:  defaultMemSlots,
 		MaxMem: memMax,
@@ -555,9 +585,26 @@ func (q *qemu) setMemoryResources(podConfig PodConfig) (ciaoQemu.Memory, error) 
 	return memory, nil
 }
 
-// createPod is the Hypervisor pod creation implementation for ciaoQemu.
+func (q *qemu) qmpSocketPath(socketName string) (string, error) {
+	parentDirPath := filepath.Join(runStoragePath, q.pod.id)
+	if len(parentDirPath) > qmpSockPathSizeLimit {
+		return "", fmt.Errorf("Parent directory path %q is too long "+
+			"(%d characters), could not add any path for the QMP socket",
+			parentDirPath, len(parentDirPath))
+	}
+
+	path := fmt.Sprintf("%s/%s-%s", parentDirPath, q.state.UUID, socketName)
+
+	if len(path) > qmpSockPathSizeLimit {
+		return path[:qmpSockPathSizeLimit], nil
+	}
+
+	return path, nil
+}
+
+// createPod is the Hypervisor pod creation implementation for govmmQemu.
 func (q *qemu) createPod(podConfig PodConfig) error {
-	var devices []ciaoQemu.Device
+	var devices []govmmQemu.Device
 
 	machineType := q.config.HypervisorMachineType
 	if machineType == "" {
@@ -584,7 +631,7 @@ func (q *qemu) createPod(podConfig PodConfig) error {
 		return err
 	}
 
-	knobs := ciaoQemu.Knobs{
+	knobs := govmmQemu.Knobs{
 		NoUserConfig: true,
 		NoDefaults:   true,
 		NoGraphic:    true,
@@ -595,27 +642,46 @@ func (q *qemu) createPod(podConfig PodConfig) error {
 		Mlock:        q.config.Mlock,
 	}
 
-	kernel := ciaoQemu.Kernel{
-		Path:   q.config.KernelPath,
+	kernelPath, err := q.config.KernelAssetPath()
+	if err != nil {
+		return err
+	}
+
+	kernel := govmmQemu.Kernel{
+		Path:   kernelPath,
 		Params: strings.Join(q.kernelParams, " "),
 	}
 
-	rtc := ciaoQemu.RTC{
+	rtc := govmmQemu.RTC{
 		Base:     "utc",
 		DriftFix: "slew",
 	}
 
+	if q.state.UUID == "" {
+		return fmt.Errorf("UUID should not be empty")
+	}
+
+	monitorSockPath, err := q.qmpSocketPath(monitorSocket)
+	if err != nil {
+		return err
+	}
+
 	q.qmpMonitorCh = qmpChannel{
 		ctx:  context.Background(),
-		path: fmt.Sprintf("%s/%s/%s", runStoragePath, podConfig.ID, monitorSocket),
+		path: monitorSockPath,
+	}
+
+	controlSockPath, err := q.qmpSocketPath(controlSocket)
+	if err != nil {
+		return err
 	}
 
 	q.qmpControlCh = qmpChannel{
 		ctx:  context.Background(),
-		path: fmt.Sprintf("%s/%s/%s", runStoragePath, podConfig.ID, controlSocket),
+		path: controlSockPath,
 	}
 
-	qmpSockets := []ciaoQemu.QMPSocket{
+	qmpSockets := []govmmQemu.QMPSocket{
 		{
 			Type:   "unix",
 			Name:   q.qmpMonitorCh.path,
@@ -637,14 +703,24 @@ func (q *qemu) createPod(podConfig PodConfig) error {
 		return err
 	}
 
+	devices, err = q.appendBridges(devices, podConfig)
+	if err != nil {
+		return err
+	}
+
 	cpuModel := "host"
 	if q.nestedRun {
 		cpuModel += ",pmu=off"
 	}
 
-	qemuConfig := ciaoQemu.Config{
+	firmwarePath, err := podConfig.HypervisorConfig.FirmwareAssetPath()
+	if err != nil {
+		return err
+	}
+
+	qemuConfig := govmmQemu.Config{
 		Name:        fmt.Sprintf("pod-%s", podConfig.ID),
-		UUID:        q.forceUUIDFormat(podConfig.ID),
+		UUID:        q.state.UUID,
 		Path:        q.path,
 		Ctx:         q.qmpMonitorCh.ctx,
 		Machine:     machine,
@@ -658,7 +734,7 @@ func (q *qemu) createPod(podConfig PodConfig) error {
 		Knobs:       knobs,
 		VGA:         "none",
 		GlobalParam: "kvm-pit.lost_tick_policy=discard",
-		Bios:        podConfig.HypervisorConfig.FirmwarePath,
+		Bios:        firmwarePath,
 	}
 
 	q.qemuConfig = qemuConfig
@@ -667,52 +743,84 @@ func (q *qemu) createPod(podConfig PodConfig) error {
 }
 
 // startPod will start the Pod's VM.
-func (q *qemu) startPod(startCh, stopCh chan struct{}) error {
-	strErr, err := ciaoQemu.LaunchQemu(q.qemuConfig, qmpLogger{})
+func (q *qemu) startPod() error {
+	strErr, err := govmmQemu.LaunchQemu(q.qemuConfig, newQMPLogger())
 	if err != nil {
 		return fmt.Errorf("%s", strErr)
 	}
 
-	// Start the QMP monitoring thread
-	q.qmpMonitorCh.disconnectCh = stopCh
-	q.qmpMonitorCh.wg.Add(1)
-	q.qmpMonitor(startCh)
+	return nil
+}
+
+// waitPod will wait for the Pod's VM to be up and running.
+func (q *qemu) waitPod(timeout int) error {
+	defer func(qemu *qemu) {
+		if q.qmpMonitorCh.qmp != nil {
+			q.qmpMonitorCh.qmp.Shutdown()
+		}
+	}(q)
+
+	if timeout < 0 {
+		return fmt.Errorf("Invalid timeout %ds", timeout)
+	}
+
+	cfg := govmmQemu.QMPConfig{Logger: newQMPLogger()}
+
+	var qmp *govmmQemu.QMP
+	var ver *govmmQemu.QMPVersion
+	var err error
+
+	timeStart := time.Now()
+	for {
+		disconnectCh := make(chan struct{})
+		qmp, ver, err = govmmQemu.QMPStart(q.qmpMonitorCh.ctx, q.qmpMonitorCh.path, cfg, disconnectCh)
+		if err == nil {
+			break
+		}
+
+		if int(time.Now().Sub(timeStart).Seconds()) > timeout {
+			return fmt.Errorf("Failed to connect to QEMU instance (timeout %ds): %v", timeout, err)
+		}
+
+		time.Sleep(time.Duration(50) * time.Millisecond)
+	}
+
+	q.qmpMonitorCh.qmp = qmp
+
+	q.Logger().WithFields(logrus.Fields{
+		"qmp-major-version": ver.Major,
+		"qmp-minor-version": ver.Minor,
+		"qmp-micro-version": ver.Micro,
+		"qmp-capabilities":  strings.Join(ver.Capabilities, ","),
+	}).Infof("QMP details")
+
+	if err = q.qmpMonitorCh.qmp.ExecuteQMPCapabilities(q.qmpMonitorCh.ctx); err != nil {
+		q.Logger().WithError(err).Error(qmpCapErrMsg)
+		return err
+	}
 
 	return nil
 }
 
 // stopPod will stop the Pod's VM.
 func (q *qemu) stopPod() error {
-	cfg := ciaoQemu.QMPConfig{Logger: qmpLogger{}}
-	q.qmpControlCh.disconnectCh = make(chan struct{})
-	const timeout = time.Duration(10) * time.Second
+	cfg := govmmQemu.QMPConfig{Logger: newQMPLogger()}
+	disconnectCh := make(chan struct{})
 
-	virtLog.Info("Stopping Pod")
-	qmp, _, err := ciaoQemu.QMPStart(q.qmpControlCh.ctx, q.qmpControlCh.path, cfg, q.qmpControlCh.disconnectCh)
+	q.Logger().Info("Stopping Pod")
+	qmp, _, err := govmmQemu.QMPStart(q.qmpControlCh.ctx, q.qmpControlCh.path, cfg, disconnectCh)
 	if err != nil {
-		virtLog.Errorf("Failed to connect to QEMU instance %v", err)
+		q.Logger().WithError(err).Error("Failed to connect to QEMU instance")
 		return err
 	}
 
 	err = qmp.ExecuteQMPCapabilities(q.qmpMonitorCh.ctx)
 	if err != nil {
-		virtLog.Errorf("Failed to negotiate capabilities with QEMU %v", err)
+		q.Logger().WithError(err).Error(qmpCapErrMsg)
 		return err
 	}
 
-	if err := qmp.ExecuteQuit(q.qmpMonitorCh.ctx); err != nil {
-		return err
-	}
-
-	// Wait for the VM disconnection notification
-	select {
-	case <-q.qmpControlCh.disconnectCh:
-		break
-	case <-time.After(timeout):
-		return fmt.Errorf("Did not receive the VM disconnection notification (timeout %ds)", timeout)
-	}
-
-	return nil
+	return qmp.ExecuteQuit(q.qmpMonitorCh.ctx)
 }
 
 func (q *qemu) togglePausePod(pause bool) error {
@@ -722,14 +830,14 @@ func (q *qemu) togglePausePod(pause bool) error {
 		}
 	}(q)
 
-	cfg := ciaoQemu.QMPConfig{Logger: qmpLogger{}}
+	cfg := govmmQemu.QMPConfig{Logger: newQMPLogger()}
 
 	// Auto-closed by QMPStart().
 	disconnectCh := make(chan struct{})
 
-	qmp, _, err := ciaoQemu.QMPStart(q.qmpControlCh.ctx, q.qmpControlCh.path, cfg, disconnectCh)
+	qmp, _, err := govmmQemu.QMPStart(q.qmpControlCh.ctx, q.qmpControlCh.path, cfg, disconnectCh)
 	if err != nil {
-		virtLog.Errorf("Failed to connect to QEMU instance %v", err)
+		q.Logger().WithError(err).Error("Failed to connect to QEMU instance")
 		return err
 	}
 
@@ -737,7 +845,7 @@ func (q *qemu) togglePausePod(pause bool) error {
 
 	err = qmp.ExecuteQMPCapabilities(q.qmpMonitorCh.ctx)
 	if err != nil {
-		virtLog.Errorf("Failed to negotiate capabilities with QEMU %v", err)
+		q.Logger().WithError(err).Error(qmpCapErrMsg)
 		return err
 	}
 
@@ -754,25 +862,53 @@ func (q *qemu) togglePausePod(pause bool) error {
 	return nil
 }
 
-func (q *qemu) qmpSetup() (*ciaoQemu.QMP, error) {
-	cfg := ciaoQemu.QMPConfig{Logger: qmpLogger{}}
+func (q *qemu) qmpSetup() (*govmmQemu.QMP, error) {
+	cfg := govmmQemu.QMPConfig{Logger: newQMPLogger()}
 
 	// Auto-closed by QMPStart().
 	disconnectCh := make(chan struct{})
 
-	qmp, _, err := ciaoQemu.QMPStart(q.qmpControlCh.ctx, q.qmpControlCh.path, cfg, disconnectCh)
+	qmp, _, err := govmmQemu.QMPStart(q.qmpControlCh.ctx, q.qmpControlCh.path, cfg, disconnectCh)
 	if err != nil {
-		virtLog.Errorf("Failed to connect to QEMU instance %v", err)
+		q.Logger().WithError(err).Error("Failed to connect to QEMU instance")
 		return nil, err
 	}
 
 	err = qmp.ExecuteQMPCapabilities(q.qmpMonitorCh.ctx)
 	if err != nil {
-		virtLog.Errorf("Failed to negotiate capabilities with QEMU %v", err)
+		q.Logger().WithError(err).Error(qmpCapErrMsg)
 		return nil, err
 	}
 
 	return qmp, nil
+}
+
+func (q *qemu) addDeviceToBridge(ID string) (string, string, error) {
+	var err error
+	var addr uint32
+
+	// looking for an empty address in the bridges
+	for _, b := range q.state.Bridges {
+		addr, err = b.addDevice(ID)
+		if err == nil {
+			return fmt.Sprintf("0x%x", addr), b.ID, nil
+		}
+	}
+
+	return "", "", err
+}
+
+func (q *qemu) removeDeviceFromBridge(ID string) error {
+	var err error
+	for _, b := range q.state.Bridges {
+		err = b.removeDevice(ID)
+		if err == nil {
+			// device was removed correctly
+			return nil
+		}
+	}
+
+	return err
 }
 
 func (q *qemu) hotplugBlockDevice(drive Drive, op operation) error {
@@ -797,10 +933,21 @@ func (q *qemu) hotplugBlockDevice(drive Drive, op operation) error {
 		}
 
 		driver := "virtio-blk-pci"
-		if err := q.qmpMonitorCh.qmp.ExecuteDeviceAdd(q.qmpMonitorCh.ctx, drive.ID, devID, driver, ""); err != nil {
+
+		addr, bus, err := q.addDeviceToBridge(drive.ID)
+		if err != nil {
 			return err
 		}
+
+		if err = q.qmpMonitorCh.qmp.ExecutePCIDeviceAdd(q.qmpMonitorCh.ctx, drive.ID, devID, driver, addr, bus); err != nil {
+			return err
+		}
+
 	} else {
+		if err := q.removeDeviceFromBridge(drive.ID); err != nil {
+			return err
+		}
+
 		if err := q.qmpMonitorCh.qmp.ExecuteDeviceDel(q.qmpMonitorCh.ctx, devID); err != nil {
 			return err
 		}
@@ -824,11 +971,19 @@ func (q *qemu) hotplugDevice(devInfo interface{}, devType deviceType, op operati
 }
 
 func (q *qemu) hotplugAddDevice(devInfo interface{}, devType deviceType) error {
-	return q.hotplugDevice(devInfo, devType, addDevice)
+	if err := q.hotplugDevice(devInfo, devType, addDevice); err != nil {
+		return err
+	}
+
+	return q.pod.storage.storeHypervisorState(q.pod.id, q.state)
 }
 
 func (q *qemu) hotplugRemoveDevice(devInfo interface{}, devType deviceType) error {
-	return q.hotplugDevice(devInfo, devType, removeDevice)
+	if err := q.hotplugDevice(devInfo, devType, removeDevice); err != nil {
+		return err
+	}
+
+	return q.pod.storage.storeHypervisorState(q.pod.id, q.state)
 }
 
 func (q *qemu) pausePod() error {
@@ -849,8 +1004,8 @@ func (q *qemu) addDevice(devInfo interface{}, devType deviceType) error {
 		socket := devInfo.(Socket)
 		q.qemuConfig.Devices = q.appendSocket(q.qemuConfig.Devices, socket)
 	case netDev:
-		endpoints := devInfo.([]Endpoint)
-		q.qemuConfig.Devices = q.appendNetworks(q.qemuConfig.Devices, endpoints)
+		endpoint := devInfo.(Endpoint)
+		q.qemuConfig.Devices = q.appendNetwork(q.qemuConfig.Devices, endpoint)
 	case blockDev:
 		drive := devInfo.(Drive)
 		q.qemuConfig.Devices = q.appendBlockDevice(q.qemuConfig.Devices, drive)
@@ -868,4 +1023,8 @@ func (q *qemu) addDevice(devInfo interface{}, devType deviceType) error {
 // logs coming from the pod.
 func (q *qemu) getPodConsole(podID string) string {
 	return filepath.Join(runStoragePath, podID, defaultConsole)
+}
+
+func (q *qemu) getState() interface{} {
+	return q.state
 }

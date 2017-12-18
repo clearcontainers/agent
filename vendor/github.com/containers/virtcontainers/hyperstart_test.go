@@ -17,15 +17,12 @@
 package virtcontainers
 
 import (
-	"io/ioutil"
 	"net"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
-	cniTypes "github.com/containernetworking/cni/pkg/types"
 	"github.com/containers/virtcontainers/pkg/hyperstart"
+	"github.com/vishvananda/netlink"
 )
 
 var testRouteDest = "192.168.10.1/32"
@@ -81,42 +78,7 @@ func TestHyperstartValidateNSocketSuccessful(t *testing.T) {
 	testHyperstartValidateNSocket(t, 2, true)
 }
 
-func TestCopyPauseBinarySuccessful(t *testing.T) {
-	tmpDirPath, err := ioutil.TempDir("", "test_shared_dir")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDirPath)
-
-	defaultSharedDir = tmpDirPath
-
-	srcFile, err := ioutil.TempFile("", "test_src_copy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(srcFile.Name())
-	defer srcFile.Close()
-
-	h := &hyper{
-		config: HyperConfig{
-			PauseBinPath: srcFile.Name(),
-		},
-	}
-
-	dstPath := filepath.Join(defaultSharedDir, testPodID,
-		pauseContainerName, rootfsDir, pauseBinName)
-
-	if err := h.copyPauseBinary(testPodID); err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(srcFile.Name())
-
-	if _, err := os.Stat(dstPath); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func testProcessHyperRoute(t *testing.T, route *cniTypes.Route, deviceName string, expected *hyperstart.Route) {
+func testProcessHyperRoute(t *testing.T, route netlink.Route, deviceName string, expected *hyperstart.Route) {
 	h := &hyper{}
 	hyperRoute := h.processHyperRoute(route, deviceName)
 
@@ -146,9 +108,9 @@ func TestProcessHyperRouteEmptyGWSuccessful(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	route := &cniTypes.Route{
-		Dst: *dest,
-		GW:  net.IP{},
+	route := netlink.Route{
+		Dst: dest,
+		Gw:  net.IP{},
 	}
 
 	testProcessHyperRoute(t, route, testRouteDeviceName, expected)
@@ -166,9 +128,9 @@ func TestProcessHyperRouteEmptyDestSuccessful(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	route := &cniTypes.Route{
-		Dst: *dest,
-		GW:  net.ParseIP(testRouteGateway),
+	route := netlink.Route{
+		Dst: dest,
+		Gw:  net.ParseIP(testRouteGateway),
 	}
 
 	testProcessHyperRoute(t, route, testRouteDeviceName, expected)
@@ -180,9 +142,9 @@ func TestProcessHyperRouteDestIPv6Failure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	route := &cniTypes.Route{
-		Dst: *dest,
-		GW:  net.IP{},
+	route := netlink.Route{
+		Dst: dest,
+		Gw:  net.IP{},
 	}
 
 	testProcessHyperRoute(t, route, testRouteDeviceName, nil)

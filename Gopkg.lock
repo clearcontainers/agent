@@ -11,7 +11,7 @@
   branch = "master"
   name = "github.com/containers/virtcontainers"
   packages = ["pkg/hyperstart"]
-  revision = "0abfabe1aa20c67ee7fce0ad92c2b0ea1fb65196"
+  revision = "847468ab12eac3726c9f31024ab9d6411d0a2d60"
 
 [[projects]]
   name = "github.com/coreos/go-systemd"
@@ -104,7 +104,6 @@
   version = "v0.9.0"
 
 [[projects]]
-  branch = "master"
   name = "github.com/sirupsen/logrus"
   packages = ["."]
   revision = "89742aefa4b206dcf400792f3bd35b542998eb3b"

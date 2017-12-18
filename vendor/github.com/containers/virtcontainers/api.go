@@ -38,6 +38,10 @@ func SetLogger(logger logrus.FieldLogger) {
 // CreatePod is the virtcontainers pod creation entry point.
 // CreatePod creates a pod and its containers. It does not start them.
 func CreatePod(podConfig PodConfig) (VCPod, error) {
+	return createPodFromConfig(podConfig)
+}
+
+func createPodFromConfig(podConfig PodConfig) (*Pod, error) {
 	// Create the pod.
 	p, err := createPod(podConfig)
 	if err != nil {
@@ -82,6 +86,12 @@ func CreatePod(podConfig PodConfig) (VCPod, error) {
 		return nil, err
 	}
 
+	// Start the proxy
+	err = p.startProxy()
+	if err != nil {
+		return nil, err
+	}
+
 	// Start shims
 	if err := p.startShims(); err != nil {
 		return nil, err
@@ -97,7 +107,7 @@ func DeletePod(podID string) (VCPod, error) {
 		return nil, errNeedPodID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rwLockPod(podID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +166,7 @@ func StartPod(podID string) (VCPod, error) {
 		return nil, errNeedPodID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rwLockPod(podID)
 	if err != nil {
 		return nil, err
 	}
@@ -168,8 +178,12 @@ func StartPod(podID string) (VCPod, error) {
 		return nil, err
 	}
 
+	return startPod(p)
+}
+
+func startPod(p *Pod) (*Pod, error) {
 	// Start it
-	err = p.start()
+	err := p.start()
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +203,7 @@ func StopPod(podID string) (VCPod, error) {
 		return nil, errNeedPod
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rwLockPod(podID)
 	if err != nil {
 		return nil, err
 	}
@@ -214,77 +228,18 @@ func StopPod(podID string) (VCPod, error) {
 // RunPod is the virtcontainers pod running entry point.
 // RunPod creates a pod and its containers and then it starts them.
 func RunPod(podConfig PodConfig) (VCPod, error) {
-	// Create the pod.
-	p, err := createPod(podConfig)
+	p, err := createPodFromConfig(podConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	// Store it.
-	err = p.storePod()
-	if err != nil {
-		return nil, err
-	}
-
-	lockFile, err := lockPod(p.id)
+	lockFile, err := rwLockPod(p.id)
 	if err != nil {
 		return nil, err
 	}
 	defer unlockPod(lockFile)
 
-	// Initialize the network.
-	netNsPath, netNsCreated, err := p.network.init(p.config.NetworkConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	// Execute prestart hooks inside netns
-	err = p.network.run(netNsPath, func() error {
-		return p.config.Hooks.preStartHooks()
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Add the network
-	networkNS, err := p.network.add(*p, p.config.NetworkConfig, netNsPath, netNsCreated)
-	if err != nil {
-		return nil, err
-	}
-
-	// Store the network
-	err = p.storage.storePodNetwork(p.id, networkNS)
-	if err != nil {
-		return nil, err
-	}
-
-	// Start the VM
-	err = p.startVM(netNsPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Start shims
-	if err := p.startShims(); err != nil {
-		return nil, err
-	}
-
-	// Start the pod
-	err = p.start()
-	if err != nil {
-		p.delete()
-		return nil, err
-	}
-
-	// Execute poststart hooks inside netns
-	err = p.network.run(networkNS.NetNsPath, func() error {
-		return p.config.Hooks.postStartHooks()
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return p, nil
+	return startPod(p)
 }
 
 // ListPod is the virtcontainers pod listing entry point.
@@ -325,16 +280,26 @@ func StatusPod(podID string) (PodStatus, error) {
 		return PodStatus{}, errNeedPodID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rLockPod(podID)
 	if err != nil {
 		return PodStatus{}, err
 	}
-	defer unlockPod(lockFile)
 
 	pod, err := fetchPod(podID)
 	if err != nil {
+		unlockPod(lockFile)
 		return PodStatus{}, err
 	}
+
+	// We need to potentially wait for a separate container.stop() routine
+	// that needs to be terminated before we return from this function.
+	// Deferring the synchronization here is very important since we want
+	// to avoid a deadlock. Indeed, the goroutine started by statusContainer
+	// will need to lock an exclusive lock, meaning that all other locks have
+	// to be released to let this happen. This call ensures this will be the
+	// last operation executed by this function.
+	defer pod.wg.Wait()
+	defer unlockPod(lockFile)
 
 	var contStatusList []ContainerStatus
 	for _, container := range pod.containers {
@@ -366,7 +331,7 @@ func CreateContainer(podID string, containerConfig ContainerConfig) (VCPod, VCCo
 		return nil, nil, errNeedPodID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rwLockPod(podID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -411,7 +376,7 @@ func DeleteContainer(podID, containerID string) (VCContainer, error) {
 		return nil, errNeedContainerID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rwLockPod(podID)
 	if err != nil {
 		return nil, err
 	}
@@ -460,7 +425,7 @@ func StartContainer(podID, containerID string) (VCContainer, error) {
 		return nil, errNeedContainerID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rwLockPod(podID)
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +463,7 @@ func StopContainer(podID, containerID string) (VCContainer, error) {
 		return nil, errNeedContainerID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rwLockPod(podID)
 	if err != nil {
 		return nil, err
 	}
@@ -536,7 +501,7 @@ func EnterContainer(podID, containerID string, cmd Cmd) (VCPod, VCContainer, *Pr
 		return nil, nil, nil, errNeedContainerID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rLockPod(podID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -573,20 +538,32 @@ func StatusContainer(podID, containerID string) (ContainerStatus, error) {
 		return ContainerStatus{}, errNeedContainerID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rLockPod(podID)
 	if err != nil {
 		return ContainerStatus{}, err
 	}
-	defer unlockPod(lockFile)
 
 	pod, err := fetchPod(podID)
 	if err != nil {
+		unlockPod(lockFile)
 		return ContainerStatus{}, err
 	}
+
+	// We need to potentially wait for a separate container.stop() routine
+	// that needs to be terminated before we return from this function.
+	// Deferring the synchronization here is very important since we want
+	// to avoid a deadlock. Indeed, the goroutine started by statusContainer
+	// will need to lock an exclusive lock, meaning that all other locks have
+	// to be released to let this happen. This call ensures this will be the
+	// last operation executed by this function.
+	defer pod.wg.Wait()
+	defer unlockPod(lockFile)
 
 	return statusContainer(pod, containerID)
 }
 
+// This function is going to spawn a goroutine and it needs to be waited for
+// by the caller.
 func statusContainer(pod *Pod, containerID string) (ContainerStatus, error) {
 	for _, container := range pod.containers {
 		if container.id == containerID {
@@ -596,15 +573,26 @@ func statusContainer(pod *Pod, containerID string) (ContainerStatus, error) {
 			if (container.state.State == StateRunning ||
 				container.state.State == StatePaused) &&
 				container.process.Pid > 0 {
+
 				running, err := isShimRunning(container.process.Pid)
 				if err != nil {
 					return ContainerStatus{}, err
 				}
 
 				if !running {
-					if err := container.stop(); err != nil {
-						return ContainerStatus{}, err
-					}
+					pod.wg.Add(1)
+					go func() {
+						defer pod.wg.Done()
+						lockFile, err := rwLockPod(pod.id)
+						if err != nil {
+							return
+						}
+						defer unlockPod(lockFile)
+
+						if err := container.stop(); err != nil {
+							return
+						}
+					}()
 				}
 			}
 
@@ -635,7 +623,7 @@ func KillContainer(podID, containerID string, signal syscall.Signal, all bool) e
 		return errNeedContainerID
 	}
 
-	lockFile, err := lockPod(podID)
+	lockFile, err := rwLockPod(podID)
 	if err != nil {
 		return err
 	}
@@ -671,4 +659,35 @@ func PausePod(podID string) (VCPod, error) {
 // (or unpauses) and already paused pod.
 func ResumePod(podID string) (VCPod, error) {
 	return togglePausePod(podID, false)
+}
+
+// ProcessListContainer is the virtcontainers entry point to list
+// processes running inside a container
+func ProcessListContainer(podID, containerID string, options ProcessListOptions) (ProcessList, error) {
+	if podID == "" {
+		return nil, errNeedPodID
+	}
+
+	if containerID == "" {
+		return nil, errNeedContainerID
+	}
+
+	lockFile, err := rLockPod(podID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockPod(lockFile)
+
+	p, err := fetchPod(podID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch the container.
+	c, err := fetchContainer(p, containerID)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.processList(options)
 }
