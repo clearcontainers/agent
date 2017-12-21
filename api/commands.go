@@ -124,6 +124,7 @@ type Process struct {
 	Args             []string         `json:"args"`
 	Envs             []EnvironmentVar `json:"envs,omitempty"`
 	Workdir          string           `json:"workdir"`
+	NoNewPrivileges  bool             `json:"noNewPrivileges"`
 }
 
 // DecodedMessage describes messages going through CTL channel.
