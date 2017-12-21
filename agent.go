@@ -1241,7 +1241,7 @@ func newContainerCb(pod *pod, data []byte) error {
 		},
 
 		NoNewKeyring:    true,
-		NoNewPrivileges: true,
+		NoNewPrivileges: payload.Process.NoNewPrivileges,
 	}
 
 	// Populate config.Mounts with additional mounts provided through
