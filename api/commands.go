@@ -148,14 +148,25 @@ type StartPod struct {
 	ShareDir   string     `json:"shareDir"`
 }
 
+// SystemMountsInfo describes additional information for system mounts that the agent
+// needs to handle
+type SystemMountsInfo struct {
+	// Indicates if /dev has been passed as a bind mount for the host /dev
+	BindMountDev bool `json:"bindMountDev"`
+
+	// Size of /dev/shm assigned on the host.
+	DevShmSize int `json:"devShmSize"`
+}
+
 // NewContainer describes the format expected by a NEWCONTAINER command.
 type NewContainer struct {
-	ID      string  `json:"id"`
-	RootFs  string  `json:"rootfs"`
-	Image   string  `json:"image"`
-	FsType  string  `json:"fstype,omitempty"`
-	Fsmap   []Fsmap `json:"fsmap"`
-	Process Process `json:"process"`
+	ID               string           `json:"id"`
+	RootFs           string           `json:"rootfs"`
+	Image            string           `json:"image"`
+	FsType           string           `json:"fstype,omitempty"`
+	Fsmap            []Fsmap          `json:"fsmap"`
+	Process          Process          `json:"process"`
+	SystemMountsInfo SystemMountsInfo `json:"systemMountsInfo"`
 }
 
 // KillContainer describes the format expected by a KILLCONTAINER command.
