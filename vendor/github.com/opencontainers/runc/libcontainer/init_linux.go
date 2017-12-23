@@ -348,14 +348,6 @@ func fixStdioPermissions(config *initConfig, u *user.ExecUser) error {
 			continue
 		}
 
-		// Skip chown if s.Gid is actually an unmapped gid in the host. While
-		// this is a bit dodgy if it just so happens that the console _is_
-		// owned by overflow_gid, there's no way for us to disambiguate this as
-		// a userspace program.
-		if _, err := config.Config.HostGID(int(s.Gid)); err != nil {
-			continue
-		}
-
 		// We only change the uid owner (as it is possible for the mount to
 		// prefer a different gid, and there's no reason for us to change it).
 		// The reason why we don't just leave the default uid=X mount setup is
@@ -363,6 +355,15 @@ func fixStdioPermissions(config *initConfig, u *user.ExecUser) error {
 		// this code, you couldn't effectively run as a non-root user inside a
 		// container and also have a console set up.
 		if err := unix.Fchown(int(fd), u.Uid, int(s.Gid)); err != nil {
+			// If we've hit an EINVAL then s.Gid isn't mapped in the user
+			// namespace. If we've hit an EPERM then the inode's current owner
+			// is not mapped in our user namespace (in particular,
+			// privileged_wrt_inode_uidgid() has failed). In either case, we
+			// are in a configuration where it's better for us to just not
+			// touch the stdio rather than bail at this point.
+			if err == unix.EINVAL || err == unix.EPERM {
+				continue
+			}
 			return err
 		}
 	}
@@ -493,6 +494,16 @@ func signalAllProcesses(m cgroups.Manager, s os.Signal) error {
 		logrus.Warn(err)
 	}
 
+	subreaper, err := system.GetSubreaper()
+	if err != nil {
+		// The error here means that PR_GET_CHILD_SUBREAPER is not
+		// supported because this code might run on a kernel older
+		// than 3.4. We don't want to throw an error in that case,
+		// and we simplify things, considering there is no subreaper
+		// set.
+		subreaper = 0
+	}
+
 	for _, p := range procs {
 		if s != unix.SIGKILL {
 			if ok, err := isWaitable(p.Pid); err != nil {
@@ -506,9 +517,16 @@ func signalAllProcesses(m cgroups.Manager, s os.Signal) error {
 			}
 		}
 
-		if _, err := p.Wait(); err != nil {
-			if !isNoChildren(err) {
-				logrus.Warn("wait: ", err)
+		// In case a subreaper has been setup, this code must not
+		// wait for the process. Otherwise, we cannot be sure the
+		// current process will be reaped by the subreaper, while
+		// the subreaper might be waiting for this process in order
+		// to retrieve its exit code.
+		if subreaper == 0 {
+			if _, err := p.Wait(); err != nil {
+				if !isNoChildren(err) {
+					logrus.Warn("wait: ", err)
+				}
 			}
 		}
 	}

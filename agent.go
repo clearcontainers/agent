@@ -25,6 +25,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -40,6 +41,7 @@ import (
 	_ "github.com/opencontainers/runc/libcontainer/nsenter"
 	"github.com/opencontainers/runc/libcontainer/utils"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -73,7 +75,7 @@ const (
 	// If a process terminates because of signal "n"
 	// The exit code is "128 + signal_number"
 	// http://tldp.org/LDP/abs/html/exitcodes.html
-	exitSigalOffset = 128
+	exitSignalOffset = 128
 
 	// Timeouts
 	defaultTimeout     = 15
@@ -174,6 +176,7 @@ type pod struct {
 	stdinLock      sync.Mutex
 	ttyLock        sync.Mutex
 	containersLock sync.RWMutex
+	subreaper      *reaper
 }
 
 type stdinInfo struct {
@@ -262,6 +265,10 @@ func main() {
 		return
 	}
 
+	if err := pod.setSubreaper(); err != nil {
+		return
+	}
+
 	// Run CTL loop
 	go pod.controlLoop(&wgLoops)
 
@@ -293,6 +300,38 @@ func (p *pod) deleteContainer(id string) {
 	p.containersLock.Lock()
 	delete(p.containers, id)
 	p.containersLock.Unlock()
+}
+
+// This loop is meant to be run inside a separate Go routine.
+func (p *pod) reaperLoop(sigCh chan os.Signal) {
+	for sig := range sigCh {
+		switch sig {
+		case unix.SIGCHLD:
+			if err := p.subreaper.reap(); err != nil {
+				agentLog.Error(err)
+				return
+			}
+		default:
+			agentLog.Infof("Unexpected signal %s, nothing to do...", sig.String())
+		}
+	}
+}
+
+func (p *pod) setSubreaper() error {
+	p.subreaper = &reaper{
+		exitCodeChans: make(map[int]chan int),
+	}
+
+	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, uintptr(1), 0, 0, 0); err != nil {
+		return err
+	}
+
+	sigCh := make(chan os.Signal, 512)
+	signal.Notify(sigCh, unix.SIGCHLD)
+
+	go p.reaperLoop(sigCh)
+
+	return nil
 }
 
 func (p *pod) controlLoop(wg *sync.WaitGroup) {
@@ -858,11 +897,37 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	fieldLogger := agentLog.WithField("container-pid", pid)
 
+	// This lock is very important to avoid any race with reaper.reap().
+	// Indeed, if we don't lock this here, we could potentially get the
+	// SIGCHLD signal before the exit code channel has been created,
+	// meaning we will miss the opportunity to get the exit code, leading
+	// this function to wait forever on the newly created exit code
+	// channel.
+	// Also, this lock has to be taken before we run the new process since
+	// container.Run() expects to reap the first process itself.
+	p.subreaper.RLock()
+
 	if err := ctr.container.Run(&(proc.process)); err != nil {
 		fieldLogger.WithError(err).Error("Could not run process")
+		p.subreaper.RUnlock()
 		started <- err
 		return err
 	}
+
+	// Get process PID
+	processID, err := proc.process.Pid()
+	if err != nil {
+		p.subreaper.RUnlock()
+		started <- err
+		return err
+	}
+
+	// Create process channel to allow this function to wait for it.
+	// This channel is buffered so that reaper.reap() will not block
+	// until this function listen onto this channel.
+	p.subreaper.setExitCodeCh(processID, make(chan int, 1))
+
+	p.subreaper.RUnlock()
 
 	if terminal {
 		termMaster, err := utils.RecvFd(proc.consoleSock)
@@ -898,44 +963,20 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	started <- nil
 
-	processState, err := proc.process.Wait()
-	// Ignore error if process fails because of an unsuccessful exit code
-	if _, ok := err.(*exec.ExitError); err != nil && !ok {
-		fieldLogger.WithError(err).Error("Process wait failed")
+	// Using helper function wait() to deal with the subreaper.
+	libContProcess := (*reaperLibcontainerProcess)(&(proc.process))
+	exitCode, err := p.subreaper.wait(processID, libContProcess)
+	if err != nil {
+		return err
 	}
-	// Close pipes to terminate routeOutput() go routines.
-	ctr.closeProcessPipes(pid)
 
-	// Wait for routeOutput() go routines.
-	wgRouteOutput.Wait()
+	agentLog.WithField("exit-code", exitCode).Info("got wait exit code")
 
 	// Send empty message on tty channel to close the IO stream
 	p.sendSeq(proc.seqStdio, []byte{})
 
-	// Get exit code
-	exitCode := uint8(255)
-	if processState != nil {
-		fieldLogger = fieldLogger.WithField("process-state", fmt.Sprintf("%+v", processState))
-		fieldLogger.Info("Got process state")
-
-		if waitStatus, ok := processState.Sys().(syscall.WaitStatus); ok {
-			exitStatus := waitStatus.ExitStatus()
-
-			if waitStatus.Signaled() {
-				exitCode = uint8(exitSigalOffset + waitStatus.Signal())
-				fieldLogger.WithField("exit-code", exitCode).Info("process was signaled")
-			} else {
-				exitCode = uint8(exitStatus)
-				fieldLogger.WithField("exit-code", exitCode).Info("got wait exit code")
-			}
-		}
-
-	} else {
-		fieldLogger.Error("Process state is nil could not get process exit code")
-	}
-
 	// Send exit code through tty channel
-	p.sendSeq(proc.seqStdio, []byte{exitCode})
+	p.sendSeq(proc.seqStdio, []byte{uint8(exitCode)})
 
 	return nil
 }
