@@ -84,47 +84,6 @@ const (
 	killProcessTimeout = defaultTimeout
 )
 
-var capsList = []string{
-	"CAP_AUDIT_CONTROL",
-	"CAP_AUDIT_READ",
-	"CAP_AUDIT_WRITE",
-	"CAP_BLOCK_SUSPEND",
-	"CAP_CHOWN",
-	"CAP_DAC_OVERRIDE",
-	"CAP_DAC_READ_SEARCH",
-	"CAP_FOWNER",
-	"CAP_FSETID",
-	"CAP_IPC_LOCK",
-	"CAP_IPC_OWNER",
-	"CAP_KILL",
-	"CAP_LEASE",
-	"CAP_LINUX_IMMUTABLE",
-	"CAP_MAC_ADMIN",
-	"CAP_MAC_OVERRIDE",
-	"CAP_MKNOD",
-	"CAP_NET_ADMIN",
-	"CAP_NET_BIND_SERVICE",
-	"CAP_NET_BROADCAST",
-	"CAP_NET_RAW",
-	"CAP_SETGID",
-	"CAP_SETFCAP",
-	"CAP_SETPCAP",
-	"CAP_SETUID",
-	"CAP_SYS_ADMIN",
-	"CAP_SYS_BOOT",
-	"CAP_SYS_CHROOT",
-	"CAP_SYS_MODULE",
-	"CAP_SYS_NICE",
-	"CAP_SYS_PACCT",
-	"CAP_SYS_PTRACE",
-	"CAP_SYS_RAWIO",
-	"CAP_SYS_RESOURCE",
-	"CAP_SYS_TIME",
-	"CAP_SYS_TTY_CONFIG",
-	"CAP_SYSLOG",
-	"CAP_WAKE_ALARM",
-}
-
 var defaultCapsList = []string{
 	"CAP_CHOWN",
 	"CAP_DAC_OVERRIDE",
@@ -1291,6 +1250,26 @@ func mountDevToRootfs(absoluteRootFs string) error {
 	return nil
 }
 
+func updateCapabilities(config *configs.Config, payload hyper.NewContainer) {
+	if len(payload.Process.Capabilities.Bounding) > 0 {
+		config.Capabilities = &configs.Capabilities{
+			Bounding:    payload.Process.Capabilities.Bounding,
+			Effective:   payload.Process.Capabilities.Effective,
+			Inheritable: payload.Process.Capabilities.Inheritable,
+			Permitted:   payload.Process.Capabilities.Permitted,
+			Ambient:     payload.Process.Capabilities.Ambient,
+		}
+	} else {
+		config.Capabilities = &configs.Capabilities{
+			Bounding:    defaultCapsList,
+			Effective:   defaultCapsList,
+			Inheritable: defaultCapsList,
+			Permitted:   defaultCapsList,
+			Ambient:     defaultCapsList,
+		}
+	}
+}
+
 func newContainerCb(pod *pod, data []byte) error {
 	var payload hyper.NewContainer
 
@@ -1329,13 +1308,6 @@ func newContainerCb(pod *pod, data []byte) error {
 
 	config := configs.Config{
 		Rootfs: absoluteRootFs,
-		Capabilities: &configs.Capabilities{
-			Bounding:    defaultCapsList,
-			Effective:   defaultCapsList,
-			Inheritable: defaultCapsList,
-			Permitted:   defaultCapsList,
-			Ambient:     defaultCapsList,
-		},
 		Namespaces: configs.Namespaces([]configs.Namespace{
 			{Type: configs.NEWNS},
 			{Type: configs.NEWUTS},
@@ -1392,6 +1364,8 @@ func newContainerCb(pod *pod, data []byte) error {
 		NoNewKeyring:    true,
 		NoNewPrivileges: payload.Process.NoNewPrivileges,
 	}
+
+	updateCapabilities(&config, payload)
 
 	// Populate config.Mounts with additional mounts provided through
 	// fsmap.
