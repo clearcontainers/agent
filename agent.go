@@ -1031,6 +1031,12 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 		return err
 	}
 
+	// Make sure all output has been routed before to go further and
+	// return the exit code.
+	ctr.closeProcessStreams(pid)
+	ctr.closeProcessPipes(pid)
+	wgRouteOutput.Wait()
+
 	agentLog.WithField("exit-code", exitCode).Info("got wait exit code")
 
 	// Send empty message on tty channel to close the IO stream
