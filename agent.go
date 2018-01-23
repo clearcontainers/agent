@@ -649,6 +649,23 @@ func findVirtualSerialPath(serialName string) (string, error) {
 	return "", fmt.Errorf("Could not find virtio port %s", serialName)
 }
 
+// read l bytes from r
+func readAll(r io.Reader, l int) ([]byte, int, error) {
+	data := make([]byte, l)
+	var t int
+	for {
+		n, err := r.Read(data[t:])
+		if err != nil {
+			return nil, -1, err
+		}
+
+		t += n
+		if t == l {
+			return data, t, nil
+		}
+	}
+}
+
 func (p *pod) readCtl() (hyper.HyperCmd, []byte, error) {
 	buf := make([]byte, ctlHeaderSize)
 
@@ -669,9 +686,8 @@ func (p *pod) readCtl() (hyper.HyperCmd, []byte, error) {
 		return cmd, nil, nil
 	}
 
-	data := make([]byte, length)
-
-	n, err = p.ctl.Read(data)
+	var data []byte
+	data, n, err = readAll(p.ctl, length)
 	if err != nil {
 		return hyper.ErrorCmd, []byte{}, err
 	}
@@ -704,9 +720,8 @@ func (p *pod) readTty() (uint64, []byte, error) {
 		return seq, []byte{}, nil
 	}
 
-	data := make([]byte, length)
-
-	n, err = p.tty.Read(data)
+	var data []byte
+	data, n, err = readAll(p.tty, length)
 	if err != nil {
 		return uint64(0), []byte{}, err
 	}
