@@ -34,6 +34,11 @@ GENERATED_FILES := $(UNIT_FILES)
 UNIT_FILES += clear-containers.target
 endif
 
+HAVE_LIBUDEV := $(shell pkg-config --exists libudev 2>/dev/null || echo 'no')
+ifeq ($(HAVE_LIBUDEV),no)
+$(error "Install libudev devel")
+endif
+
 SED = sed
 
 .DEFAULT: $(TARGET)
