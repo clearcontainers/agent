@@ -56,6 +56,7 @@ checkcommits \
 	--need-sign-offs \
 	--body-length 72 \
 	--subject-length 75 \
+	--ignore-fixes-for-subsystem "release" \
 	--verbose
 
 pushd "${test_repo_dir}"
