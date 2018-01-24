@@ -72,6 +72,7 @@ const (
 	cannotGetTimeMsg   = "Failed to get time for event %s:%v"
 	pciBusRescanFile   = "/sys/bus/pci/rescan"
 	pciBusMode         = 0220
+	cpuMode            = 0600
 
 	// If a process terminates because of signal "n"
 	// The exit code is "128 + signal_number"
@@ -82,6 +83,10 @@ const (
 	defaultTimeout     = 15
 	runProcessTimeout  = defaultTimeout
 	killProcessTimeout = defaultTimeout
+
+	// Udev subsystem
+	blockSubsystem = "block"
+	cpuSubsystem   = "cpu"
 )
 
 var defaultCapsList = []string{
@@ -531,7 +536,12 @@ func (p *pod) listenToUdevEvents(done chan struct{}) {
 
 			// Ignore udev events for block devices, these are handled by another go-routine in waitForBlockDevice
 			// that mounts block devices at the expected location provided on the command line.
-			if d.Subsystem() == "block" {
+			if d.Subsystem() == blockSubsystem {
+				continue
+			}
+
+			if d.Subsystem() == cpuSubsystem {
+				p.onlineVCPU(d.Syspath())
 				continue
 			}
 
@@ -550,6 +560,24 @@ func (p *pod) listenToUdevEvents(done chan struct{}) {
 			}
 		}
 	}()
+}
+
+func (p *pod) onlineVCPU(syspath string) {
+	onlinePath := filepath.Join(syspath, "online")
+	if _, err := os.Stat(onlinePath); os.IsNotExist(err) {
+		agentLog.WithFields(logrus.Fields{
+			"subsystem":      "udevlistener",
+			"udev-subsystem": "cpu",
+		}).Errorf("online file of vCPU %s not exist", syspath)
+		return
+	}
+
+	if err := ioutil.WriteFile(onlinePath, []byte("1"), cpuMode); err != nil {
+		agentLog.WithFields(logrus.Fields{
+			"subsystem":      "udevlistener",
+			"udev-subsystem": "cpu",
+		}).Errorf("failed to online vCPU %s: %s", syspath, err)
+	}
 }
 
 func (p *pod) bindDeviceNode(devNode string) {
