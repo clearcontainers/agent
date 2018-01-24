@@ -173,6 +173,15 @@ type SystemMountsInfo struct {
 	DevShmSize int `json:"devShmSize"`
 }
 
+// Constraints describes the constraints for a container
+type Constraints struct {
+	// CPUQuota specifies the total amount of time in microseconds
+	CPUQuota int64
+
+	// CPUPeriod specifies a period of time in microseconds
+	CPUPeriod uint64
+}
+
 // NewContainer describes the format expected by a NEWCONTAINER command.
 type NewContainer struct {
 	ID               string           `json:"id"`
@@ -182,6 +191,7 @@ type NewContainer struct {
 	Fsmap            []Fsmap          `json:"fsmap"`
 	Process          Process          `json:"process"`
 	SystemMountsInfo SystemMountsInfo `json:"systemMountsInfo"`
+	Constraints      Constraints      `json:"constraints"`
 }
 
 // KillContainer describes the format expected by a KILLCONTAINER command.

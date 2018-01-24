@@ -1355,6 +1355,8 @@ func newContainerCb(pod *pod, data []byte) error {
 				MemorySwappiness: nil,
 				AllowAllDevices:  nil,
 				AllowedDevices:   configs.DefaultAllowedDevices,
+				CpuQuota:         payload.Constraints.CPUQuota,
+				CpuPeriod:        payload.Constraints.CPUPeriod,
 			},
 		},
 		Devices: configs.DefaultAutoCreatedDevices,
