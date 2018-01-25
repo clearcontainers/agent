@@ -110,6 +110,11 @@ type Fsmap struct {
 	AbsolutePath bool   `json:"absolutePath"`
 	ReadOnly     bool   `json:"readOnly"`
 	DockerVolume bool   `json:"dockerVolume"`
+
+	// SCSIAddr is the SCSI address in the format SCSI-id:LUN.
+	// If SCSIAddr is provided, we use that to determine the device name to be mounted
+	// ignoring the Source field that is used for as the source location for mounting otherwise.
+	SCSIAddr string `json:"scsiAddr,omitempty"`
 }
 
 // Capabilities specify the capabilities to keep when executing the process inside the container.

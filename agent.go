@@ -1306,6 +1306,15 @@ func addMounts(config *configs.Config, fsmaps []hyper.Fsmap) error {
 	for _, fsmap := range fsmaps {
 
 		source := fsmap.Source
+		var err error
+
+		if fsmap.SCSIAddr != "" {
+			source, err = getSCSIDisk(fsmap.SCSIAddr)
+			if err != nil {
+				return err
+			}
+		}
+
 		if !fsmap.AbsolutePath {
 			source = filepath.Join(mountShareDirDest, fsmap.Source)
 		}
