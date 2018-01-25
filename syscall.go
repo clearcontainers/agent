@@ -18,11 +18,14 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	hyper "github.com/clearcontainers/agent/api"
 	goudev "github.com/jochenvg/go-udev"
 	"github.com/sirupsen/logrus"
 )
@@ -115,10 +118,25 @@ func unmountShareDir() error {
 	return os.RemoveAll(containerMountDest)
 }
 
-func waitForBlockDevice(deviceName string) error {
-	devicePath := filepath.Join(devPath, deviceName)
+var (
+	// Here in "0:0", the first number is the SCSI host number, while the second number is always 0.
+	scsiHostChannel = "/0:0:"
 
-	if _, err := os.Stat(devicePath); err == nil {
+	scsiDiskPrefix = "/sys/class/scsi_disk" + scsiHostChannel
+
+	scsiDiskSuffix = "/device/block"
+)
+
+func waitForBlockDevice(deviceName string, isSCSIAddr bool) error {
+	var path string
+
+	if isSCSIAddr {
+		path = filepath.Join(scsiDiskPrefix+deviceName, scsiDiskSuffix)
+	} else {
+		path = filepath.Join(devPath, deviceName)
+	}
+
+	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
 
@@ -147,19 +165,24 @@ func waitForBlockDevice(deviceName string) error {
 		fieldLogger.Info("Started listening for udev events for block device hotplug")
 
 		// Check if the device already exists.
-		if _, err := os.Stat(devicePath); err == nil {
+		if _, err := os.Stat(path); err == nil {
 			fieldLogger.Info("Device already hotplugged, quit listening")
 		} else {
 
 			for d := range ch {
 				fieldLogger = fieldLogger.WithFields(logrus.Fields{
 					"udev-path":  d.Syspath(),
+					"dev-path":   d.Devpath(),
 					"udev-event": d.Action(),
 				})
 
 				fieldLogger.Info("got udev event")
-				if d.Action() == "add" && filepath.Base(d.Devpath()) == deviceName {
-					fieldLogger.Info("Hotplug event received")
+
+				if isSCSIAddr && d.Action() == "add" && strings.Contains(d.Devpath(), scsiHostChannel+deviceName+"/block") {
+					fieldLogger.Info("SCSI hotplug event received")
+					break
+				} else if d.Action() == "add" && filepath.Base(d.Devpath()) == deviceName {
+					fieldLogger.Info("Block hotplug event received")
 					break
 				}
 			}
@@ -178,30 +201,118 @@ func waitForBlockDevice(deviceName string) error {
 	return nil
 }
 
-func mountContainerRootFs(containerID, image, rootFs, fsType string) (string, error) {
-	dest := filepath.Join(containerMountDest, containerID, "root")
+var scsiHostPath = "/sys/class/scsi_host"
+
+// scanSCSIBus scans SCSI bus for the given SCSI address(SCSI-Id and LUN)
+func scanSCSIBus(scsiAddr string) error {
+	files, err := ioutil.ReadDir(scsiHostPath)
+	if err != nil {
+		return err
+	}
+
+	tokens := strings.Split(scsiAddr, ":")
+	if len(tokens) != 2 {
+		return fmt.Errorf("Unexpected format for SCSI Address : %s, expect SCSIID:LUN", scsiAddr)
+	}
+
+	// Scan scsi host passing in the channel, SCSI id and LUN, channel is always 0
+	scanData := []byte(fmt.Sprintf("0 %s %s", tokens[0], tokens[1]))
+
+	for _, file := range files {
+		host := file.Name()
+		scanPath := filepath.Join(scsiHostPath, host, "scan")
+		if err := ioutil.WriteFile(scanPath, scanData, 0200); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// findSCSIDisk finds the SCSI disk name associated with the given SCSI address.
+// This approach eliminates the need to predict the disk name on the host side,
+// but we do need to rescan SCSI bus for this.
+func findSCSIDisk(scsiAddr string) (string, error) {
+	scsiPath := filepath.Join(scsiDiskPrefix+scsiAddr, scsiDiskSuffix)
+
+	files, err := ioutil.ReadDir(scsiPath)
+	if err != nil {
+		return "", err
+	}
+
+	l := len(files)
+
+	if l == 0 || l > 1 {
+		return "", fmt.Errorf("Expecting a single SCSI device, found %v", files)
+	}
+
+	return files[0].Name(), nil
+}
+
+// getSCSIDisk scans the SCSI bus for the SCSI address provided, waits for the SCSI disk
+// to become available and returns the device name associated with the disk.
+func getSCSIDisk(scsiAddr string) (string, error) {
+	if err := scanSCSIBus(scsiAddr); err != nil {
+		return "", err
+	}
+
+	// Check if disk is available, and find the disk name for the SCSI address
+	scsiDiskName, err := findSCSIDisk(scsiAddr)
+
+	if err == nil {
+		if err = waitForBlockDevice(scsiDiskName, false); err != nil {
+			return "", err
+		}
+	} else {
+		// If device node is not found, wait for udev event for the scsi disk,
+		// with the format "0:SCSIId:LUN/block"
+
+		if err := waitForBlockDevice(scsiAddr, true); err != nil {
+			return "", err
+		}
+
+		scsiDiskName, err = findSCSIDisk(scsiAddr)
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(devPath, scsiDiskName), nil
+}
+
+func mountContainerRootFs(payload hyper.NewContainer) (string, error) {
+	dest := filepath.Join(containerMountDest, payload.ID, "root")
 	if err := os.MkdirAll(dest, os.FileMode(0755)); err != nil {
 		return "", err
 	}
 
 	var source string
-	if fsType != "" {
-		source = filepath.Join(devPath, image)
-		if err := waitForBlockDevice(image); err != nil {
-			return "", err
+	var err error
+
+	if payload.FsType != "" {
+		// If SCSI adddress is provided, use that to find SCSI disk
+		if payload.SCSIAddr != "" {
+			source, err = getSCSIDisk(payload.SCSIAddr)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			source = filepath.Join(devPath, payload.Image)
+			if err := waitForBlockDevice(payload.Image, false); err != nil {
+				return "", err
+			}
 		}
 
-		if err := mount(source, dest, fsType, 0); err != nil {
-			return "", err
+		if err := mount(source, dest, payload.FsType, 0); err != nil {
+			return "", fmt.Errorf("Mount rootfs command failed: %s", err)
 		}
 	} else {
-		source = filepath.Join(mountShareDirDest, image)
+		source = filepath.Join(mountShareDirDest, payload.Image)
 		if err := bindMount(source, dest, false); err != nil {
 			return "", err
 		}
 	}
 
-	mountingPath := filepath.Join(dest, rootFs)
+	mountingPath := filepath.Join(dest, payload.RootFs)
 	if err := bindMount(mountingPath, mountingPath, true); err != nil {
 		return "", err
 	}

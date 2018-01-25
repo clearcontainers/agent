@@ -1387,7 +1387,7 @@ func newContainerCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Container %s already exists, impossible to create", payload.ID)
 	}
 
-	absoluteRootFs, err := mountContainerRootFs(payload.ID, payload.Image, payload.RootFs, payload.FsType)
+	absoluteRootFs, err := mountContainerRootFs(payload)
 	if err != nil {
 		return err
 	}
