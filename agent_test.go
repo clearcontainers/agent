@@ -17,6 +17,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -151,5 +152,163 @@ func TestAgentConfigGetConfig(t *testing.T) {
 				t.Errorf("agentConfig.Level = %s, wantLevel %s", c.logLevel, tt.wantLevel)
 			}
 		})
+	}
+}
+
+func TestReadCtl(t *testing.T) {
+	f, err := ioutil.TempFile("", "ctl")
+	if err != nil {
+		t.Error(err)
+	}
+	defer f.Close()
+	defer os.Remove(f.Name())
+
+	hCmd := uint32(5)
+	p := &pod{ctl: f}
+
+	// file is empty, read should fail
+	_, _, err = p.readCtl()
+	if err == nil {
+		t.Error(err)
+	}
+
+	// no enough bytes, read should fail
+	buff := make([]byte, ctlHeaderSize-1)
+	f.Write(buff)
+	f.Seek(0, 0)
+	_, _, err = p.readCtl()
+	if err == nil {
+		t.Error(err)
+	}
+
+	// there is no data, read should fail
+	buff = make([]byte, ctlHeaderSize)
+	f.Seek(0, 0)
+	binary.BigEndian.PutUint32(buff[4:ctlHeaderSize], ctlHeaderSize+1)
+	f.Write(buff)
+	f.Seek(0, 0)
+	_, _, err = p.readCtl()
+	if err == nil {
+		t.Error(err)
+	}
+
+	bufferSizes := []uint32{0, 2, 55, 278, 698, 1056, 3598, 6527, 10830, 56386, 894305, 9652381}
+	for _, s := range bufferSizes {
+		f.Seek(0, 0)
+
+		// write command and length
+		buff = make([]byte, ctlHeaderSize)
+		binary.BigEndian.PutUint32(buff[:4], hCmd)
+		binary.BigEndian.PutUint32(buff[4:ctlHeaderSize], s+ctlHeaderSize)
+		n, err := f.Write(buff)
+		if err != nil {
+			t.Error(err)
+		}
+		if uint32(n) != uint32(ctlHeaderSize) {
+			t.Errorf("expected: %d, actual: %d", n, ctlHeaderSize)
+		}
+
+		// write data
+		data := make([]byte, s)
+		n, err = f.Write(data)
+		if err != nil {
+			t.Error(err)
+		}
+		if uint32(n) != uint32(s) {
+			t.Errorf("expected: %d, actual: %d", n, s)
+		}
+
+		f.Seek(0, 0)
+
+		c, d, err := p.readCtl()
+		if err != nil {
+			t.Error(err)
+		}
+		if uint32(hCmd) != uint32(c) {
+			t.Errorf("expected: %d, actual: %d", hCmd, c)
+		}
+		if s == 0 && len(d) != 0 {
+			t.Errorf("expected: 0, actual: %d", len(d))
+		} else if len(data) != len(d) {
+			t.Errorf("expected: %d, actual: %d", len(data), len(d))
+		}
+	}
+}
+
+func TestReadTty(t *testing.T) {
+	f, err := ioutil.TempFile("", "tty")
+	if err != nil {
+		t.Error(err)
+	}
+	defer f.Close()
+	defer os.Remove(f.Name())
+
+	seq := uint64(5)
+	p := &pod{tty: f}
+
+	// file is empty, read should fail
+	_, _, err = p.readTty()
+	if err == nil {
+		t.Error(err)
+	}
+
+	// no enough bytes, read should fail
+	buff := make([]byte, ttyHeaderSize-1)
+	f.Write(buff)
+	f.Seek(0, 0)
+	_, _, err = p.readTty()
+	if err == nil {
+		t.Error(err)
+	}
+
+	// there is no data, read should fail
+	buff = make([]byte, ttyHeaderSize)
+	f.Seek(0, 0)
+	binary.BigEndian.PutUint32(buff[8:ttyHeaderSize], ttyHeaderSize+1)
+	f.Write(buff)
+	f.Seek(0, 0)
+	_, _, err = p.readTty()
+	if err == nil {
+		t.Error(err)
+	}
+
+	bufferSizes := []uint32{0, 2, 55, 278, 698, 1056, 3598, 6527, 10830, 56386, 894305, 9652381}
+	for _, s := range bufferSizes {
+		f.Seek(0, 0)
+
+		// write command and length
+		buff = make([]byte, ttyHeaderSize)
+		binary.BigEndian.PutUint64(buff[:8], seq)
+		binary.BigEndian.PutUint32(buff[8:ttyHeaderSize], s+ttyHeaderSize)
+		n, err := f.Write(buff)
+		if err != nil {
+			t.Error(err)
+		}
+		if uint32(n) != uint32(ttyHeaderSize) {
+			t.Errorf("expected: %d, actual: %d", n, ttyHeaderSize)
+		}
+
+		// write data
+		data := make([]byte, s)
+		n, err = f.Write(data)
+		if err != nil {
+			t.Error(err)
+		}
+		if uint32(n) != uint32(s) {
+			t.Errorf("expected: %d, actual: %d", n, s)
+		}
+
+		f.Seek(0, 0)
+
+		c, d, err := p.readTty()
+		if err != nil {
+			t.Error(err)
+		}
+		if seq != uint64(c) {
+			t.Errorf("expected: %d, actual: %d", seq, c)
+		}
+		if len(data) != len(d) {
+			t.Errorf("expected: %d, actual: %d", len(data), len(d))
+		}
 	}
 }
