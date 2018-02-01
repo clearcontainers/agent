@@ -193,13 +193,9 @@ func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 				route.Dest += "/" + netMask
 			}
 
-			existingRoute := findExistingDestRoute(linkAttrs.Index, initRouteList, route.Dest)
-			if existingRoute != nil {
-				agentLog.WithField("route-destination", route.Dest).Info("Route destination already exists, deleting")
-				if err := netHandle.RouteDel(existingRoute); err != nil {
-					return fmt.Errorf("Could not delete route dest(%s)/src(%s)/gw(%s)/devIndex(%d): %v",
-						existingRoute.Dst, existingRoute.Src, existingRoute.Gw, linkAttrs.Index, err)
-				}
+			if routeDestExist(linkAttrs.Index, initRouteList, route.Dest) {
+				agentLog.WithField("route-destination", route.Dest).Info("Route destination already exists, skipping")
+				continue
 			}
 
 			_, dst, err = net.ParseCIDR(route.Dest)
@@ -215,8 +211,8 @@ func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 			Gw:        net.ParseIP(route.Gateway),
 		}
 
-		if err := netHandle.RouteAdd(netRoute); err != nil {
-			return fmt.Errorf("Could not add route dest(%s)/src(%s)/gw(%s)/dev(%s): %v",
+		if err := netHandle.RouteReplace(netRoute); err != nil {
+			return fmt.Errorf("Could not add/replace route dest(%s)/src(%s)/gw(%s)/dev(%s): %v",
 				route.Dest, route.Src, route.Gateway, route.Device, err)
 		}
 
@@ -229,14 +225,14 @@ func setupRoutes(netHandle *netlink.Handle, routes *[]hyper.Route) error {
 	return nil
 }
 
-func findExistingDestRoute(ifaceIdx int, routeList []netlink.Route, dest string) *netlink.Route {
+func routeDestExist(ifaceIdx int, routeList []netlink.Route, dest string) bool {
 	for _, route := range routeList {
 		if route.LinkIndex == ifaceIdx && route.Dst.String() == dest {
-			return &route
+			return true
 		}
 	}
 
-	return nil
+	return false
 }
 
 func setupDNS(netHandle *netlink.Handle, dns []string) error {
