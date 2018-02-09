@@ -952,6 +952,35 @@ func (c *container) closeProcessPipes(pid string) {
 	}
 }
 
+func (c *container) closeConsoleSocket(pid string) error {
+	cid := c.container.ID()
+	proc := c.getProcess(pid)
+
+	errMsg := "Could not close process socket pair"
+
+	if proc == nil {
+		return fmt.Errorf("Container %s process %s no longer exists", cid, pid)
+	}
+
+	if proc.consoleSock != nil {
+		if err := proc.consoleSock.Close(); err != nil {
+			return fmt.Errorf("%s: %s", errMsg, err)
+		}
+
+		proc.consoleSock = nil
+	}
+
+	if proc.process.ConsoleSocket != nil {
+		if err := proc.process.ConsoleSocket.Close(); err != nil {
+			return fmt.Errorf("%s: %s", errMsg, err)
+		}
+
+		proc.process.ConsoleSocket = nil
+	}
+
+	return nil
+}
+
 // Executed as a go routine to route stdout and stderr to the TTY channel.
 func (p *pod) routeOutput(seq uint64, stream *os.File, wg *sync.WaitGroup) {
 	fieldLogger := agentLog.WithField("sequence", seq)
@@ -989,10 +1018,11 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	ctr := p.getContainer(cid)
 
 	defer func() {
-		ctr.wgProcesses.Done()
-		ctr.deleteProcess(pid)
-		ctr.closeProcessStreams(pid)
 		ctr.closeProcessPipes(pid)
+		ctr.closeConsoleSocket(pid)
+		ctr.closeProcessStreams(pid)
+		ctr.deleteProcess(pid)
+		ctr.wgProcesses.Done()
 	}()
 
 	var wgRouteOutput sync.WaitGroup
@@ -1026,6 +1056,15 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 		return err
 	}
 
+	// Close parent pipes since we don't need to keep them opened after
+	// they have been duplicated by libcontainer when starting the
+	// container process.
+	// Not closing those pipes means we're going to have some file
+	// descriptor maintaining the file opened even after the process
+	// returned, which would prevent this function from returning.
+	fieldLogger.Debug("Closing parent pipes")
+	ctr.closeProcessPipes(pid)
+
 	// Create process channel to allow this function to wait for it.
 	// This channel is buffered so that reaper.reap() will not block
 	// until this function listen onto this channel.
@@ -1036,6 +1075,12 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	if terminal {
 		termMaster, err := utils.RecvFd(proc.consoleSock)
 		if err != nil {
+			return err
+		}
+
+		// No need to maintain this socket opened after we retrieved
+		// the master end of the terminal.
+		if err := ctr.closeConsoleSocket(pid); err != nil {
 			return err
 		}
 
@@ -1076,8 +1121,6 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	// Make sure all output has been routed before to go further and
 	// return the exit code.
-	ctr.closeProcessStreams(pid)
-	ctr.closeProcessPipes(pid)
 	wgRouteOutput.Wait()
 
 	agentLog.WithField("exit-code", exitCode).Info("got wait exit code")
