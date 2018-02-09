@@ -989,10 +989,10 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 	ctr := p.getContainer(cid)
 
 	defer func() {
-		ctr.wgProcesses.Done()
-		ctr.deleteProcess(pid)
-		ctr.closeProcessStreams(pid)
 		ctr.closeProcessPipes(pid)
+		ctr.closeProcessStreams(pid)
+		ctr.deleteProcess(pid)
+		ctr.wgProcesses.Done()
 	}()
 
 	var wgRouteOutput sync.WaitGroup
