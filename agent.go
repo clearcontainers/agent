@@ -1026,6 +1026,15 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 		return err
 	}
 
+	// Close parent pipes since we don't need to keep them opened after
+	// they have been duplicated by libcontainer when starting the
+	// container process.
+	// Not closing those pipes means we're going to have some file
+	// descriptor maintaining the file opened even after the process
+	// returned, which would prevent this function from returning.
+	fieldLogger.Debug("Closing parent pipes")
+	ctr.closeProcessPipes(pid)
+
 	// Create process channel to allow this function to wait for it.
 	// This channel is buffered so that reaper.reap() will not block
 	// until this function listen onto this channel.
@@ -1076,8 +1085,6 @@ func (p *pod) runContainerProcess(cid, pid string, terminal bool, started chan e
 
 	// Make sure all output has been routed before to go further and
 	// return the exit code.
-	ctr.closeProcessStreams(pid)
-	ctr.closeProcessPipes(pid)
 	wgRouteOutput.Wait()
 
 	agentLog.WithField("exit-code", exitCode).Info("got wait exit code")
