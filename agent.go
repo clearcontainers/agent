@@ -1306,6 +1306,15 @@ func addMounts(config *configs.Config, fsmaps []hyper.Fsmap) error {
 	for _, fsmap := range fsmaps {
 
 		source := fsmap.Source
+		var err error
+
+		if fsmap.SCSIAddr != "" {
+			source, err = getSCSIDisk(fsmap.SCSIAddr)
+			if err != nil {
+				return err
+			}
+		}
+
 		if !fsmap.AbsolutePath {
 			source = filepath.Join(mountShareDirDest, fsmap.Source)
 		}
@@ -1387,7 +1396,7 @@ func newContainerCb(pod *pod, data []byte) error {
 		return fmt.Errorf("Container %s already exists, impossible to create", payload.ID)
 	}
 
-	absoluteRootFs, err := mountContainerRootFs(payload.ID, payload.Image, payload.RootFs, payload.FsType)
+	absoluteRootFs, err := mountContainerRootFs(payload)
 	if err != nil {
 		return err
 	}
