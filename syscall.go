@@ -32,6 +32,7 @@ import (
 
 const mountPerm = os.FileMode(0755)
 const devPath = "/dev"
+const mntOptions9p = "trans=virtio,version=9p2000.L"
 
 // bindMount bind mounts a source in to a destination, with the recursive
 // flag if needed.
@@ -107,7 +108,7 @@ func mountShareDir(tag string) error {
 		return err
 	}
 
-	return syscall.Mount(tag, mountShareDirDest, type9pFs, syscall.MS_MGC_VAL|syscall.MS_NODEV, "trans=virtio")
+	return syscall.Mount(tag, mountShareDirDest, type9pFs, syscall.MS_MGC_VAL|syscall.MS_NODEV, mntOptions9p)
 }
 
 func unmountShareDir() error {
