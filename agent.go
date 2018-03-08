@@ -207,6 +207,10 @@ func init() {
 var Version = "unknown"
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("%s version %s\n", name, Version)
+		os.Exit(0)
+	}
 
 	agentLog.Logger.Formatter = &logrus.JSONFormatter{TimestampFormat: time.RFC3339Nano}
 	config := newConfig(defaultLogLevel)
