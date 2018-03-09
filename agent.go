@@ -1428,6 +1428,7 @@ func newContainerCb(pod *pod, data []byte) error {
 				AllowedDevices:   configs.DefaultAllowedDevices,
 				CpuQuota:         payload.Constraints.CPUQuota,
 				CpuPeriod:        payload.Constraints.CPUPeriod,
+				CpuShares:        payload.Constraints.CPUShares,
 			},
 		},
 		Devices: configs.DefaultAutoCreatedDevices,

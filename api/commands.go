@@ -185,6 +185,9 @@ type Constraints struct {
 
 	// CPUPeriod specifies a period of time in microseconds
 	CPUPeriod uint64
+
+	// CPUShares specifies container's weight vs. other containers
+	CPUShares uint64
 }
 
 // NewContainer describes the format expected by a NEWCONTAINER command.
